@@ -1,0 +1,42 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap mp rescap">
+  <!-- ВОТ СЮДА ВЕРНИТЕ ВАШИ ЗНАЧЕНИЯ ИЗ БЛОКНОТА -->
+  <Identity Name="25161ff3-1517-4fd1-ada5-3e43e9b102e6" Publisher="CN=Computershik" Version="1.1.0.0" />
+  <mp:PhoneIdentity PhoneProductId="25161ff3-1517-4fd1-ada5-3e43e9b102e6" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
+  <Properties>
+    <DisplayName>MetroBox</DisplayName>
+    <PublisherDisplayName>VlessApp</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.14393.0" MaxVersionTested="10.0.14393.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="x-generate" />
+  </Resources>
+  <Applications>
+    <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="VlessApp.App">
+      <uap:VisualElements DisplayName="MetroBox" Description="Vless VPN Client by Computershik" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png">
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+      <!-- ВОТ ЗДЕСЬ ПРАВИЛЬНО ОБЪЯВЛЕН VPN ПЛАГИН -->
+      <Extensions>
+        <!-- Добавлены Executable и ResourceGroup -->
+        <Extension Category="windows.backgroundTasks" Executable="$targetnametoken$.exe" EntryPoint="VlessVpnTask.VpnBackgroundTask" ResourceGroup="tunnel">
+          <BackgroundTasks>
+            <uap:Task Type="vpnClient" />
+          </BackgroundTasks>
+        </Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <!-- ВОТ ЗДЕСЬ ПРАВИЛЬНО ОБЪЯВЛЕНЫ РАЗРЕШЕНИЯ -->
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="privateNetworkClientServer" />
+    <Capability Name="internetClientServer" />
+    <rescap:Capability Name="networkingVpnProvider" />
+  </Capabilities>
+</Package>
