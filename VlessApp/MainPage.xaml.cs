@@ -40,8 +40,6 @@ namespace VlessApp
 
         public string ArrowIcon => IsExpanded ? "\uE70D" : "\uE76C";
 
-        // Метаданные извлекаются из резервного кэша серверов подписки
-        // Это предотвращает их исчезновение при сворачивании группы
         public string LastUpdatedText => _allItems.Count > 0
             ? $"Обновлено: {_allItems[0].LastUpdated:dd.MM.yyyy HH:mm}"
             : "Импортировано: не обновлялось";
@@ -79,8 +77,6 @@ namespace VlessApp
 
     public sealed partial class MainPage : Page
     {
-      
-
         public static bool IsRedirectingToSettings = false;
 
         private VpnManager _vpnManager = new VpnManager();
@@ -90,7 +86,7 @@ namespace VlessApp
 
         private DispatcherTimer _timer;
         private DispatcherTimer _statusTimer;
-        private DispatcherTimer _autoUpdateTimer; // Таймер автообновления
+        private DispatcherTimer _autoUpdateTimer;
         private TimeSpan _activeTime;
         private bool _isConnected = false;
         private bool _isCheckingStatus = false;
@@ -111,7 +107,6 @@ namespace VlessApp
             _statusTimer.Tick += StatusTimer_Tick;
             _statusTimer.Start();
 
-            // Автообновление подписок раз в час (проверяем каждые 5 минут)
             _autoUpdateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
             _autoUpdateTimer.Tick += AutoUpdateTimer_Tick;
             _autoUpdateTimer.Start();
@@ -146,7 +141,7 @@ namespace VlessApp
         private async void MainPage_Loaded(object sender, RoutedEventArgs e)
         {
             await LoadProfilesAsync();
-            await CheckAndAutoUpdateSubscriptionsAsync(); // Проверка автообновления при старте
+            await CheckAndAutoUpdateSubscriptionsAsync();
         }
 
         private void Timer_Tick(object sender, object e)
@@ -169,27 +164,19 @@ namespace VlessApp
             }
         }
 
-      
-      
-
-        // Проверка активности виртуального адаптера на уровне IANA-интерфейсов Windows 10 Mobile
         private bool IsVpnProfileConnectedByIana()
         {
             try
             {
-                // Запрашиваем все активные сетевые подключения
                 var connections = Windows.Networking.Connectivity.NetworkInformation.GetConnectionProfiles();
                 foreach (var conn in connections)
                 {
                     if (conn.NetworkAdapter != null)
                     {
                         uint type = conn.NetworkAdapter.IanaInterfaceType;
-
-                        // 131 = Tunnel (IPsec/туннель), 150 = PropVirtual (Виртуальный интерфейс/VPN)
                         if (type == 131 || type == 150)
                         {
                             var level = conn.GetNetworkConnectivityLevel();
-                            // Проверяем, что интерфейс активен и готов передавать трафик
                             if (level == Windows.Networking.Connectivity.NetworkConnectivityLevel.InternetAccess ||
                                 level == Windows.Networking.Connectivity.NetworkConnectivityLevel.ConstrainedInternetAccess)
                             {
@@ -230,25 +217,29 @@ namespace VlessApp
                 var mine = await GetProfileAsync();
                 if (mine != null && mine is VpnPlugInProfile plug)
                 {
-                    VpnManagementConnectionStatus status;
-                    try
-                    {
-                        status = plug.ConnectionStatus;
-                    }
-                    catch (Exception)
-                    {
-                        _cachedProfile = null;
-                        status = VpnManagementConnectionStatus.Disconnected;
-                    }
-
-                    // СУПЕР-БЭКАП ДАТЧИК (Комбинация IP-зонда и IANA-интерфейса)
-                    // Если ConnectionStatus сбоит, но в ядре Lumia активен виртуальный IP (11.16.1.1) 
-                    // или поднят системный адаптер типа 150/131 — VPN гарантированно успешно работает!
+                    // Проверяем активность системных сетевых IANA-интерфейсов ядра (без генерации исключений)
                     bool isVpnActive = IsVpnInterfaceActive() || IsVpnProfileConnectedByIana();
+                    VpnManagementConnectionStatus status = VpnManagementConnectionStatus.Disconnected;
 
-                    if (status != VpnManagementConnectionStatus.Connected && isVpnActive)
+                    if (isVpnActive)
                     {
-                        status = VpnManagementConnectionStatus.Connected;
+                        // Если туннель уже поднят, пробуем запросить точный статус.
+                        // Если системный API выбросит исключение (из-за инициализации плагина) — 
+                        // мы все равно знаем, что туннель работает, поэтому ставим Connected.
+                        try
+                        {
+                            status = plug.ConnectionStatus;
+                        }
+                        catch (Exception)
+                        {
+                            status = VpnManagementConnectionStatus.Connected;
+                        }
+                    }
+                    else
+                    {
+                        // Если в системе нет активных VPN-интерфейсов, мы гарантированно отключены.
+                        // Избегаем вызова plug.ConnectionStatus, предотвращая тормоза интерфейса и спам в логи.
+                        status = VpnManagementConnectionStatus.Disconnected;
                     }
 
                     if (status == VpnManagementConnectionStatus.Connected)
@@ -296,16 +287,17 @@ namespace VlessApp
                 }
                 else
                 {
-                    _cachedProfile = null;
+                    // Если профиль не найден в ОС и мы были подключены — сбрасываем кэш и перезапускаемся.
+                    // В штатном отключенном состоянии не сбрасываем кэш каждую секунду, чтобы не вызывать повторный поиск.
                     if (_isConnected)
                     {
+                        _cachedProfile = null;
                         HardResetMainPage();
                     }
                 }
             }
             catch (Exception ex)
             {
-                _cachedProfile = null;
                 System.Diagnostics.Debug.WriteLine($"[STATUS CHECK FAIL] {ex.Message}");
             }
         }
@@ -316,27 +308,22 @@ namespace VlessApp
             _timer?.Stop();
             _statusTimer?.Stop();
 
-
-
             try
             {
                 Application.Current.Resuming -= Current_Resuming;
             }
             catch { }
 
-           
             Application.Current.Exit();
-            
         }
 
         private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
         {
-            
             if (_isConnected)
             {
                 StatusText.Text = "Отключение...";
                 await ForceDisconnectActiveProfileAsync();
-                await Task.Delay(700);   // дать платформе освободить tunnel
+                await Task.Delay(700);
                 HardResetMainPage();
             }
             else
@@ -345,6 +332,78 @@ namespace VlessApp
                 {
                     StatusText.Text = "Выберите профиль!";
                     return;
+                }
+
+                // Блокировка XTLS-Vision
+                if (!string.IsNullOrEmpty(_selectedProfile.Flow) &&
+                    _selectedProfile.Flow.IndexOf("vision", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var visionDialog = new ContentDialog
+                    {
+                        Title = "Протокол не поддерживается",
+                        Content = "Протокол XTLS Vision (flow=xtls-rprx-vision) пока не поддерживается данным приложением.\n\n" +
+                                  "Пожалуйста, выберите конфигурацию с другим типом flow (например, без flow или с классическим Reality).",
+                        CloseButtonText = "ОК"
+                    };
+
+                    await visionDialog.ShowAsync();
+                    StatusText.Text = "Подключение отменено (Vision не поддерживается).";
+                    return;
+                }
+
+                // Блокировка gRPC транспорта
+                if (string.Equals(_selectedProfile.Type, "grpc", StringComparison.OrdinalIgnoreCase))
+                {
+                    var grpcDialog = new ContentDialog
+                    {
+                        Title = "Транспорт не поддерживается",
+                        Content = "Транспорт gRPC пока не поддерживается данным приложением.\n\n" +
+                                  "Пожалуйста, выберите профиль с другим типом транспорта (например, TCP или XHTTP).",
+                        CloseButtonText = "ОК"
+                    };
+
+                    await grpcDialog.ShowAsync();
+                    StatusText.Text = "Подключение отменено (gRPC не поддерживается).";
+                    return;
+                }
+
+                if (string.Equals(_selectedProfile.Type, "ws", StringComparison.OrdinalIgnoreCase))
+                {
+                    var xhttpDialog = new ContentDialog
+                    {
+                        Title = "Не поддерживается",
+                        Content = "Транспорт WebSocket пока не поддерживается. " +
+                                  "Если вам нужен обход белых списков, используйте сервера с TCP транспортом ",
+                        CloseButtonText = "Отмена"
+                    };
+
+                    var choice = await xhttpDialog.ShowAsync();
+                    if (choice != ContentDialogResult.Primary)
+                    {
+                        StatusText.Text = "Подключение отменено.";
+                        return;
+                    }
+                }
+
+                if (string.Equals(_selectedProfile.Type, "xhttp", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_selectedProfile.Type, "splithttp", StringComparison.OrdinalIgnoreCase))
+                {
+                    var xhttpDialog = new ContentDialog
+                    {
+                        Title = "Ограниченная поддержка",
+                        Content = "Транспорт XHTTP реализован лишь частично и работает не со всеми серверами. " +
+                                  "Совместимость зависит от конфигурации сервера (режим и версия Reality). " +
+                                  "Если подключение не установится — используйте профиль с другим транспортом.",
+                        PrimaryButtonText = "Всё равно подключиться",
+                        CloseButtonText = "Отмена"
+                    };
+
+                    var choice = await xhttpDialog.ShowAsync();
+                    if (choice != ContentDialogResult.Primary)
+                    {
+                        StatusText.Text = "Подключение отменено.";
+                        return;
+                    }
                 }
 
                 var mine = await _vpnManager.FindOwnProfileAsync();
@@ -358,10 +417,9 @@ namespace VlessApp
                 _vpnManager.WriteSettings(_selectedProfile);
 
                 await ForceDisconnectActiveProfileAsync();
-                await Task.Delay(700);   // дать платформе освободить tunnel
+                await Task.Delay(700);
 
                 StatusText.Text = "Настройки применены...";
-                
                 await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
             }
         }
@@ -379,9 +437,6 @@ namespace VlessApp
                     return false;
                 }
 
-                // Наш клиент обслуживает один VPN-профиль. Имя в системе задаёт пользователь
-                // вручную, оно не совпадает с меткой сервера в приложении — поэтому по имени
-                // не ищем. Отключаем все профили нашего провайдера (обычно он один).
                 bool any = false;
                 foreach (var p in profiles)
                 {
@@ -405,7 +460,6 @@ namespace VlessApp
             }
         }
 
-        
         private async Task ShowNoProfileDialogAsync()
         {
             ContentDialog dialog = new ContentDialog
@@ -423,7 +477,11 @@ namespace VlessApp
             }
         }
 
-        private async void ImportBtn_Click(object sender, RoutedEventArgs e)
+        // =========================================================================
+        // ЛОГИКА ДОБАВЛЕНИЯ ПРОФИЛЕЙ (Из буфера обмена / Офлайн-распознавание QR)
+        // =========================================================================
+
+        private async void ImportFromClipboard_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -431,42 +489,254 @@ namespace VlessApp
                 if (dataPackageView.Contains(StandardDataFormats.Text))
                 {
                     string text = await dataPackageView.GetTextAsync();
-                    StatusText.Text = "Загрузка/Парсинг...";
-                    AddBtn.IsEnabled = false;
-
-                    var newProfiles = await VlessProfile.ProcessInputAsync(text);
-
-                    if (newProfiles.Count > 0)
-                    {
-                        var incomingSubscriptions = newProfiles
-                            .Select(p => p.SubscriptionGroup)
-                            .Distinct()
-                            .Where(g => g.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                                         g.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                            .ToList();
-
-                        foreach (var subUrl in incomingSubscriptions)
-                        {
-                            _allProfiles.RemoveAll(p => string.Equals(p.SubscriptionGroup, subUrl, StringComparison.OrdinalIgnoreCase));
-                        }
-
-                        // Наполняем метаданными по умолчанию
-                        PopulateMetadata(newProfiles, text);
-
-                        _allProfiles.AddRange(newProfiles);
-
-                        UpdateGroupedUI();
-                        await SaveProfilesAsync();
-                        StatusText.Text = $"Импортировано {newProfiles.Count} серверов";
-                    }
-                    else
-                    {
-                        StatusText.Text = "В буфере не найдено vless:// профилей";
-                    }
+                    await ProcessAndAddImportTextAsync(text);
                 }
                 else
                 {
                     StatusText.Text = "Буфер обмена пуст";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "Ошибка импорта: " + ex.Message;
+            }
+        }
+
+        private async void ScanQrCode_Click(object sender, RoutedEventArgs e)
+        {
+            var selectSourceDialog = new ContentDialog
+            {
+                Title = "Сканирование QR-кода",
+                Content = "Выберите источник изображения с QR-кодом:",
+                PrimaryButtonText = "Камера",
+                SecondaryButtonText = "Галерея",
+                CloseButtonText = "Отмена"
+            };
+
+            var choice = await selectSourceDialog.ShowAsync();
+            Windows.Storage.StorageFile file = null;
+
+            try
+            {
+                if (choice == ContentDialogResult.Primary)
+                {
+                    var captureUI = new Windows.Media.Capture.CameraCaptureUI();
+                    captureUI.PhotoSettings.Format = Windows.Media.Capture.CameraCaptureUIPhotoFormat.Jpeg;
+                    file = await captureUI.CaptureFileAsync(Windows.Media.Capture.CameraCaptureUIMode.Photo);
+                }
+                else if (choice == ContentDialogResult.Secondary)
+                {
+                    var picker = new Windows.Storage.Pickers.FileOpenPicker();
+                    picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.PicturesLibrary;
+                    picker.ViewMode = Windows.Storage.Pickers.PickerViewMode.Thumbnail;
+                    picker.FileTypeFilter.Add(".jpg");
+                    picker.FileTypeFilter.Add(".jpeg");
+                    picker.FileTypeFilter.Add(".png");
+                    picker.FileTypeFilter.Add(".bmp");
+
+                    file = await picker.PickSingleFileAsync();
+                }
+
+                if (file == null)
+                {
+                    StatusText.Text = "Сканирование отменено";
+                    return;
+                }
+
+                StatusText.Text = "Обработка и распознавание (многопроходный анализ)...";
+                string qrResult = null;
+
+                using (var stream = await file.OpenAsync(Windows.Storage.FileAccessMode.Read))
+                {
+                    qrResult = await DecodeQrCodeFromStreamAsync(stream);
+                }
+
+                if (!string.IsNullOrEmpty(qrResult))
+                {
+                    StatusText.Text = "Код успешно распознан!";
+                    await ProcessAndAddImportTextAsync(qrResult);
+                }
+                else
+                {
+                    StatusText.Text = "Не удалось распознать QR-код.";
+                    var failDialog = new ContentDialog
+                    {
+                        Title = "Ошибка распознавания",
+                        Content = "Локальный декодер не смог распознать QR-код даже после многопроходного анализа.\n\n" +
+                                  "Убедитесь, что QR-код находится в фокусе, полностью попадает в кадр и не перекрыт бликами от освещения.",
+                        CloseButtonText = "ОК"
+                    };
+                    await failDialog.ShowAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "Ошибка сканирования: " + ex.Message;
+            }
+        }
+
+        // Многопроходное декодирование потока изображения в разных разрешениях
+        private async Task<string> DecodeQrCodeFromStreamAsync(Windows.Storage.Streams.IRandomAccessStream stream)
+        {
+            try
+            {
+                var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+
+                // Проход 1: Пробуем оригинальный размер (подходит для высокой детализации)
+                using (var originalBmp = await decoder.GetSoftwareBitmapAsync(
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                    new Windows.Graphics.Imaging.BitmapTransform(),
+                    Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                    Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
+                {
+                    string res = DecodeWithBinarizers(originalBmp);
+                    if (!string.IsNullOrEmpty(res)) return res;
+                }
+
+                // Масштабируем до различных целевых размеров для подавления шумов и смазов
+                uint[] targets = new uint[] { 1200, 800, 600, 450 };
+                uint origWidth = decoder.PixelWidth;
+                uint origHeight = decoder.PixelHeight;
+
+                foreach (uint targetSize in targets)
+                {
+                    if (origWidth <= targetSize && origHeight <= targetSize) continue;
+
+                    var transform = new Windows.Graphics.Imaging.BitmapTransform();
+                    float ratio = (float)origWidth / origHeight;
+                    if (origWidth > origHeight)
+                    {
+                        transform.ScaledWidth = targetSize;
+                        transform.ScaledHeight = (uint)(targetSize / ratio);
+                    }
+                    else
+                    {
+                        transform.ScaledHeight = targetSize;
+                        transform.ScaledWidth = (uint)(targetSize * ratio);
+                    }
+                    transform.InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Linear;
+
+                    using (var scaledBmp = await decoder.GetSoftwareBitmapAsync(
+                        Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                        Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                        transform,
+                        Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                        Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
+                    {
+                        string res = DecodeWithBinarizers(scaledBmp);
+                        if (!string.IsNullOrEmpty(res)) return res;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[QR STREAM DECODE ERROR] {ex.Message}");
+            }
+            return null;
+        }
+
+        // Попытка декодирования конкретного кадра двумя разными математическими бинаризаторами
+        private string DecodeWithBinarizers(Windows.Graphics.Imaging.SoftwareBitmap bmp)
+        {
+            try
+            {
+                // Метод 1: HybridBinarizer (по умолчанию). Отлично справляется с тенями и градиентами освещения.
+                var readerHybrid = new ZXing.BarcodeReader();
+                readerHybrid.Options = new ZXing.Common.DecodingOptions
+                {
+                    TryHarder = true,
+                    TryInverted = true,
+                    PossibleFormats = new List<ZXing.BarcodeFormat> { ZXing.BarcodeFormat.QR_CODE }
+                };
+                var src = new ZXing.SoftwareBitmapLuminanceSource(bmp);
+                var result = readerHybrid.Decode(src);
+                if (result != null && !string.IsNullOrEmpty(result.Text)) return result.Text;
+
+                // Метод 2: GlobalHistogramBinarizer. Отлично восстанавливает смазанные/расфокусированные границы.
+                var readerGlobal = new ZXing.BarcodeReader(
+                    null,
+                    (b) => new ZXing.SoftwareBitmapLuminanceSource(b),
+                    (luminanceSource) => new ZXing.Common.GlobalHistogramBinarizer(luminanceSource)
+                );
+                readerGlobal.Options = new ZXing.Common.DecodingOptions
+                {
+                    TryHarder = true,
+                    TryInverted = true,
+                    PossibleFormats = new List<ZXing.BarcodeFormat> { ZXing.BarcodeFormat.QR_CODE }
+                };
+                result = readerGlobal.Decode(bmp);
+                if (result != null && !string.IsNullOrEmpty(result.Text)) return result.Text;
+            }
+            catch { }
+            return null;
+        }
+
+        // Локальное офлайн-декодирование с использованием библиотеки ZXing.Net
+        private string DecodeQrCodeOffline(Windows.Graphics.Imaging.SoftwareBitmap softwareBitmap)
+        {
+            try
+            {
+                // Конвертируем SoftwareBitmap в Bgra8 для стабильного попиксельного анализа библиотекой ZXing
+                var convertedBmp = Windows.Graphics.Imaging.SoftwareBitmap.Convert(
+                    softwareBitmap,
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+
+                var luminanceSource = new ZXing.SoftwareBitmapLuminanceSource(convertedBmp);
+                var reader = new ZXing.BarcodeReader();
+
+                reader.Options = new ZXing.Common.DecodingOptions
+                {
+                    TryHarder = true,
+                    PossibleFormats = new List<ZXing.BarcodeFormat> { ZXing.BarcodeFormat.QR_CODE }
+                };
+
+                var result = reader.Decode(luminanceSource);
+                return result?.Text;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[OFFLINE QR DECODE ERROR] {ex.Message}");
+            }
+            return null;
+        }
+
+        private async Task ProcessAndAddImportTextAsync(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            StatusText.Text = "Загрузка/Парсинг...";
+            AddBtn.IsEnabled = false;
+
+            try
+            {
+                var newProfiles = await VlessProfile.ProcessInputAsync(text);
+
+                if (newProfiles.Count > 0)
+                {
+                    var incomingSubscriptions = newProfiles
+                        .Select(p => p.SubscriptionGroup)
+                        .Distinct()
+                        .Where(g => g.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                                     g.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    foreach (var subUrl in incomingSubscriptions)
+                    {
+                        _allProfiles.RemoveAll(p => string.Equals(p.SubscriptionGroup, subUrl, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    PopulateMetadata(newProfiles, text);
+                    _allProfiles.AddRange(newProfiles);
+
+                    UpdateGroupedUI();
+                    await SaveProfilesAsync();
+                    StatusText.Text = $"Импортировано {newProfiles.Count} серверов";
+                }
+                else
+                {
+                    StatusText.Text = "В импортированных данных не найдено профилей";
                 }
             }
             catch (Exception ex)
@@ -479,16 +749,11 @@ namespace VlessApp
             }
         }
 
-        // Заполнение метаданных подписки по умолчанию
-        // Обновлено: заглушки удалены. Поля остаются пустыми и автоматически скрываются в UI,
-        // если сервер не передал реальных метаданных в заголовках.
         private void PopulateMetadata(List<VlessProfile> profiles, string url)
         {
             foreach (var p in profiles)
             {
                 p.LastUpdated = DateTime.Now;
-                // p.Description, p.InfoUrl и p.TelegramUrl сохраняют свои реальные значения,
-                // полученные от парсера VlessProfile.ProcessInputAsync
             }
         }
 
@@ -548,8 +813,6 @@ namespace VlessApp
             StatusText.Text = "Все группы свернуты";
         }
 
-        // Проверка пинга по туннелю (активный VPN) с выводом "Проверка пинга..." внутри кнопки
-        // Проверка пинга по туннелю (активный VPN) с фиксацией результата на экране
         private async void CheckConnection_Tapped(object sender, TappedRoutedEventArgs e)
         {
             if (!_isConnected)
@@ -560,11 +823,9 @@ namespace VlessApp
 
             CheckConnectionText.Text = "Проверка пинга...";
 
-            // Временный бэкап надписей на центральной кнопке
             string backupBtnText = ConnectBtnText.Text;
             var backupBtnVisibility = TimeText.Visibility;
 
-            // Замещаем текст внутри кнопки "ПОДКЛЮЧИТЬ" на индикатор теста
             ConnectBtnText.Text = "ПРОВЕРКА...";
             TimeText.Visibility = Visibility.Collapsed;
 
@@ -600,24 +861,17 @@ namespace VlessApp
                 resultText = "Ошибка соединения";
             }
 
-            // Выводим результат в оба индикатора
             CheckConnectionText.Text = resultText;
             ConnectBtnText.Text = resultText;
 
-            // Ожидаем 3 секунды и восстанавливаем прежний вид только центральной кнопки
             await Task.Delay(3000);
 
             if (_isConnected)
             {
-                // Возвращаем таймер и статус "ПОДКЛЮЧЕН" на сферу подключения
                 ConnectBtnText.Text = backupBtnText;
                 TimeText.Visibility = backupBtnVisibility;
-
-                // Текст надписи CheckConnectionText НЕ восстанавливаем, оставляя результат последнего пинга
             }
         }
-
-        // === РЕАЛИЗАЦИЯ ЖЕСТОВ СВАЙПА ВПРАВО (Actions) И ВЛЕВО (Delete) ===
 
         private void Item_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
         {
@@ -627,20 +881,19 @@ namespace VlessApp
             if (transform != null)
             {
                 double newX = transform.X + e.Delta.Translation.X;
-                if (newX < -60) newX = -60; // Предел сдвига влево (мусорный бак)
-                if (newX > 120) newX = 120; // Предел сдвига вправо (меню)
+                if (newX < -60) newX = -60;
+                if (newX > 120) newX = 120;
                 transform.X = newX;
             }
         }
 
-        // Сброс сдвига при переиспользовании визуального контейнера (виртуализация UWP)
         private void ContentGrid_Loaded(object sender, RoutedEventArgs e)
         {
             var grid = sender as Grid;
             var transform = grid?.RenderTransform as TranslateTransform;
             if (transform != null)
             {
-                transform.X = 0; // Принудительно закрываем свайп-панель у новой ячейки
+                transform.X = 0;
             }
         }
 
@@ -653,11 +906,11 @@ namespace VlessApp
             {
                 if (transform.X > 60)
                 {
-                    transform.X = 120; // Открыто меню быстрых действий
+                    transform.X = 120;
                 }
                 else if (transform.X < -30)
                 {
-                    transform.X = -60; // Открыта кнопка удаления
+                    transform.X = -60;
                 }
                 else
                 {
@@ -731,8 +984,6 @@ namespace VlessApp
             return FindParent<T>(parentObject);
         }
 
-        // === МЕНЮ ПОДЕЛИТЬСЯ (URL / QR / JSON) ===
-
         private void ShareUrl_Click(object sender, RoutedEventArgs e)
         {
             var button = sender as Button;
@@ -794,8 +1045,6 @@ namespace VlessApp
             return $"{{\n  \"server\": \"{p.Address}\",\n  \"port\": {p.Port},\n  \"uuid\": \"{p.Uuid}\",\n  \"type\": \"{p.Type}\",\n  \"security\": \"{p.Security}\",\n  \"sni\": \"{p.Sni}\",\n  \"public_key\": \"{p.PublicKey}\",\n  \"short_id\": \"{p.ShortId}\"\n}}";
         }
 
-        // === ИНФО И ТЕЛЕГРАМ КНОПКИ ===
-
         private async void InfoLink_Tapped(object sender, TappedRoutedEventArgs e)
         {
             var border = sender as Border;
@@ -815,8 +1064,6 @@ namespace VlessApp
                 await Windows.System.Launcher.LaunchUriAsync(new Uri(group.TelegramUrl));
             }
         }
-
-        // === ФУНКЦИИ ОБНОВЛЕНИЯ И АВТООБНОВЛЕНИЯ ПОДПИСОК ===
 
         private async void UpdateSubscription_Click(object sender, RoutedEventArgs e)
         {
@@ -859,7 +1106,6 @@ namespace VlessApp
             }
         }
 
-        // Логика автообновления каждые 60 минут
         private async Task CheckAndAutoUpdateSubscriptionsAsync()
         {
             var subscriptionsToUpdate = _allProfiles
@@ -1010,14 +1256,12 @@ namespace VlessApp
                 ).AsTask();
 
                 var timeoutTask = System.Threading.Tasks.Task.Delay(3000);
-
                 var completedTask = await System.Threading.Tasks.Task.WhenAny(connectTask, timeoutTask);
 
                 if (completedTask == connectTask)
                 {
                     await connectTask;
                     timer.Stop();
-                    // Изменен формат вывода пинга отдельного сервера: без молнии, в формате "*** мс"
                     profile.CleanPingText = $"{timer.ElapsedMilliseconds} мс";
                 }
                 else
@@ -1042,7 +1286,6 @@ namespace VlessApp
             AboutPageGrid.Visibility = Visibility.Visible;
         }
 
-        // Обработчик кнопки «Назад» на странице «О приложении»
         private void AboutBackBtn_Click(object sender, RoutedEventArgs e)
         {
             AboutPageGrid.Visibility = Visibility.Collapsed;

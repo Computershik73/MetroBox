@@ -375,6 +375,7 @@ namespace VlessVpnTask
 
         private CryptographicKey _clientAppCryptoKey;
         private CryptographicKey _serverAppCryptoKey;
+        public bool OfferH1Only = false;
 
         public string NegotiatedAlpn { get; private set; } = "";
 
@@ -394,6 +395,26 @@ namespace VlessVpnTask
                 return true;
             }
             catch { return false; }
+        }
+
+        private ushort NextGrease()
+        {
+            byte[] r = Tls13Crypto.RandomBytes(1);
+            byte b = (byte)((r[0] & 0xF0) | 0x0A); // валидный GREASE-паттерн 0x?a?a
+            return (ushort)((b << 8) | b);
+        }
+
+        private byte[] BuildAlpnList()
+        {
+            byte[] protos = OfferH1Only
+                ? new byte[] { 8, (byte)'h', (byte)'t', (byte)'t', (byte)'p', (byte)'/', (byte)'1', (byte)'.', (byte)'1' }
+                : new byte[] { 2, (byte)'h',(byte)'2',
+                               8, (byte)'h',(byte)'t',(byte)'t',(byte)'p',(byte)'/',(byte)'1',(byte)'.',(byte)'1' };
+            byte[] list = new byte[protos.Length + 2];
+            list[0] = (byte)(protos.Length >> 8);
+            list[1] = (byte)(protos.Length & 0xFF);
+            System.Buffer.BlockCopy(protos, 0, list, 2, protos.Length);
+            return list;
         }
 
         public async Task<bool> EstablishHandshakeAsync(DataWriter writer, DataReader reader)
@@ -575,16 +596,28 @@ namespace VlessVpnTask
 
         private byte[] BuildRealityClientHello()
         {
+            ushort gCipher = NextGrease();
+            ushort gGroup = NextGrease();
+            ushort gVer = NextGrease();
+            ushort gExtA = NextGrease();
+            ushort gExtB = NextGrease();
+
             using (var ms = new MemoryStream())
             {
-                ms.WriteByte(3); ms.WriteByte(3);
-                ms.Write(_clientRandom, 0, 32);
-                ms.WriteByte(32); ms.Write(new byte[32], 0, 32);
-                ms.WriteByte(0); ms.WriteByte(2);
-                ms.WriteByte(0x13); ms.WriteByte(0x01);
-                ms.WriteByte(1); ms.WriteByte(0);
+                ms.WriteByte(3); ms.WriteByte(3);                 // legacy_version = TLS 1.2
+                ms.Write(_clientRandom, 0, 32);                   // random
+                ms.WriteByte(32); ms.Write(new byte[32], 0, 32);  // legacy_session_id (auth впишется сюда позже)
 
-                byte[] exts = BuildExtensions();
+                // cipher_suites: GREASE + AES128-GCM + AES256-GCM + CHACHA20 (Chrome-набор)
+                ms.WriteByte(0x00); ms.WriteByte(0x08);
+                ms.WriteByte((byte)(gCipher >> 8)); ms.WriteByte((byte)gCipher);
+                ms.WriteByte(0x13); ms.WriteByte(0x01);
+                ms.WriteByte(0x13); ms.WriteByte(0x02);
+                ms.WriteByte(0x13); ms.WriteByte(0x03);
+
+                ms.WriteByte(0x01); ms.WriteByte(0x00);           // legacy_compression = null
+
+                byte[] exts = BuildExtensions(gGroup, gVer, gExtA, gExtB);
                 ms.WriteByte((byte)(exts.Length >> 8)); ms.WriteByte((byte)(exts.Length & 0xFF));
                 ms.Write(exts, 0, exts.Length);
 
@@ -592,10 +625,13 @@ namespace VlessVpnTask
                 using (var hs = new MemoryStream())
                 {
                     hs.WriteByte(1);
-                    hs.WriteByte((byte)(body.Length >> 16)); hs.WriteByte((byte)(body.Length >> 8)); hs.WriteByte((byte)(body.Length & 0xFF));
+                    hs.WriteByte((byte)(body.Length >> 16));
+                    hs.WriteByte((byte)(body.Length >> 8));
+                    hs.WriteByte((byte)(body.Length & 0xFF));
                     hs.Write(body, 0, body.Length);
                     byte[] hsBytes = hs.ToArray();
 
+                    // ==== Reality-auth: логика без изменений, только hello теперь больше ====
                     byte[] pubKey = new byte[32];
                     if (!string.IsNullOrEmpty(_cfg.PublicKey))
                     {
@@ -632,10 +668,14 @@ namespace VlessVpnTask
             }
         }
 
-        private byte[] BuildExtensions()
+        private byte[] BuildExtensions(ushort gGroup, ushort gVer, ushort gExtA, ushort gExtB)
         {
             using (var ms = new MemoryStream())
             {
+                // 1. GREASE (пустое)
+                AddExt(ms, gExtA, new byte[0]);
+
+                // 2. server_name
                 string sni = string.IsNullOrEmpty(_cfg.Sni) ? _cfg.Address : _cfg.Sni;
                 byte[] sniBytes = Encoding.ASCII.GetBytes(sni);
                 byte[] sniExt = new byte[5 + sniBytes.Length];
@@ -643,25 +683,65 @@ namespace VlessVpnTask
                 sniExt[2] = 0; sniExt[3] = (byte)(sniBytes.Length >> 8); sniExt[4] = (byte)(sniBytes.Length & 0xFF);
                 System.Buffer.BlockCopy(sniBytes, 0, sniExt, 5, sniBytes.Length);
                 AddExt(ms, 0x0000, sniExt);
-                AddExt(ms, 0x000a, new byte[] { 0, 2, 0, 0x1d });
-                AddExt(ms, 0x000d, new byte[] { 0, 10, 4, 3, 5, 3, 8, 4, 8, 5, 8, 7 });
 
-                byte[] alpnProtos = new byte[] {
-                    2, (byte)'h', (byte)'2',
-                    8, (byte)'h', (byte)'t', (byte)'t', (byte)'p', (byte)'/', (byte)'1', (byte)'.', (byte)'1'
-                };
-                byte[] alpnList = new byte[alpnProtos.Length + 2];
-                alpnList[0] = (byte)(alpnProtos.Length >> 8);
-                alpnList[1] = (byte)(alpnProtos.Length & 0xFF);
-                System.Buffer.BlockCopy(alpnProtos, 0, alpnList, 2, alpnProtos.Length);
-                AddExt(ms, 0x0010, alpnList);
+                // 3. extended_master_secret
+                AddExt(ms, 0x0017, new byte[0]);
+                // 4. renegotiation_info
+                AddExt(ms, 0xff01, new byte[] { 0x00 });
+                // 5. supported_groups: GREASE, x25519, secp256r1, secp384r1
+                AddExt(ms, 0x000a, new byte[] {
+                    0x00, 0x08,
+                    (byte)(gGroup >> 8), (byte)gGroup,
+                    0x00, 0x1d, 0x00, 0x17, 0x00, 0x18
+                });
+                // 6. ec_point_formats: uncompressed
+                AddExt(ms, 0x000b, new byte[] { 0x01, 0x00 });
+                // 7. session_ticket
+                AddExt(ms, 0x0023, new byte[0]);
+                // 8. ALPN
+                AddExt(ms, 0x0010, BuildAlpnList());
+                // 9. status_request (OCSP)
+                AddExt(ms, 0x0005, new byte[] { 0x01, 0x00, 0x00, 0x00, 0x00 });
+                // 10. signature_algorithms (Chrome-порядок)
+                AddExt(ms, 0x000d, new byte[] {
+                    0x00, 0x10,
+                    0x04,0x03, 0x08,0x04, 0x04,0x01, 0x05,0x03,
+                    0x08,0x05, 0x05,0x01, 0x08,0x06, 0x06,0x01
+                });
+                // 11. signed_certificate_timestamp
+                AddExt(ms, 0x0012, new byte[0]);
+                // 12. key_share: GREASE(1 байт) + x25519(32 байта). GREASE-group совпадает с supported_groups.
+                byte[] ks = new byte[2 + 5 + 4 + 32];
+                int ksLen = 5 + 4 + 32; // длина client_shares
+                ks[0] = (byte)(ksLen >> 8); ks[1] = (byte)ksLen;
+                ks[2] = (byte)(gGroup >> 8); ks[3] = (byte)gGroup; ks[4] = 0x00; ks[5] = 0x01; ks[6] = 0x00;
+                ks[7] = 0x00; ks[8] = 0x1d; ks[9] = 0x00; ks[10] = 0x20;
+                System.Buffer.BlockCopy(_clientPublic, 0, ks, 11, 32);
+                AddExt(ms, 0x0033, ks);
+                // 13. psk_key_exchange_modes: psk_dhe_ke
+                AddExt(ms, 0x002d, new byte[] { 0x01, 0x01 });
+                // 14. supported_versions: GREASE + TLS 1.3
+                AddExt(ms, 0x002b, new byte[] {
+                    0x04, (byte)(gVer >> 8), (byte)gVer, 0x03, 0x04
+                });
+                // 15. compress_certificate: brotli
+                AddExt(ms, 0x001b, new byte[] { 0x02, 0x00, 0x02 });
+                // 16. application_settings (ALPS) — только когда предлагаем h2
+                if (!OfferH1Only)
+                    AddExt(ms, 0x4469, new byte[] { 0x00, 0x03, 0x02, (byte)'h', (byte)'2' });
+                // 17. GREASE (1-байтовая нагрузка)
+                AddExt(ms, gExtB, new byte[] { 0x00 });
 
-                AddExt(ms, 0x002b, new byte[] { 2, 3, 4 });
-                byte[] keyShare = new byte[38];
-                keyShare[0] = 0; keyShare[1] = 36; keyShare[2] = 0; keyShare[3] = 0x1d; keyShare[4] = 0; keyShare[5] = 32;
-                System.Buffer.BlockCopy(_clientPublic, 0, keyShare, 6, 32);
-                AddExt(ms, 0x0033, keyShare);
-                AddExt(ms, 0x0015, new byte[128]);
+                // 18. padding до 512 (правило BoringSSL: окно 256..511)
+                byte[] soFar = ms.ToArray();
+                int bodyNoPad = 2 + 32 + 1 + 32 + 2 + 8 + 2 + 2 + soFar.Length;
+                if (bodyNoPad >= 256 && bodyNoPad < 512)
+                {
+                    int padLen = 512 - bodyNoPad - 4; // 4 = заголовок padding-расширения
+                    if (padLen < 0) padLen = 0;
+                    AddExt(ms, 0x0015, new byte[padLen]);
+                }
+
                 return ms.ToArray();
             }
         }
@@ -817,9 +897,17 @@ namespace VlessVpnTask
         private byte[] ParseServerHello(byte[] hs)
         {
             if (hs.Length < 44 || hs[0] != 2) return null;
-            int pos = 38;
-            int sidLen = hs[pos++];
-            pos += sidLen + 2 + 1;
+            int sidLen = hs[38];
+            int cipherOff = 39 + sidLen;
+            if (cipherOff + 3 > hs.Length) return null;
+            int chosenCipher = (hs[cipherOff] << 8) | hs[cipherOff + 1];
+            if (chosenCipher != 0x1301)
+            {
+                FileLog.Important($"[REALITY TLS 1.3 ERROR] Сервер выбрал шифр 0x{chosenCipher:X4}; " +
+                                  "клиент реализует только 0x1301 (AES-128-GCM-SHA256). Handshake прерван.");
+                return null;
+            }
+            int pos = 39 + sidLen + 2 + 1; // пропустили cipher(2) + compression(1)
             int extTotal = (hs[pos] << 8) | hs[pos + 1];
             pos += 2;
             int end = pos + extTotal;
@@ -898,6 +986,10 @@ namespace VlessVpnTask
         private System.IO.Stream _outStream;
 
         private bool _xhttpEnabled;
+        private XhttpSplitClient _split;
+        private bool _splitEnabled;
+        private WsTransport _ws;
+        private bool _wsEnabled;
         private XhttpStreamOne _xhttp;
         private bool _xhttpHeadParsed;
 
@@ -973,10 +1065,63 @@ namespace VlessVpnTask
             _channel = channel;
         }
 
+        private byte[] BuildDirectVlessHeader()
+        {
+            using (var ms = new MemoryStream())
+            {
+                ms.WriteByte(0x00);
+                Guid guid = Guid.Empty; Guid.TryParse(_cfg.Uuid, out guid);
+                ms.Write(GuidToNetworkBytes(guid), 0, 16);
+                ms.WriteByte(0x00); // addon len
+                ms.WriteByte(0x01); // cmd = TCP
+                ms.WriteByte((byte)(_directPort >> 8));
+                ms.WriteByte((byte)(_directPort & 0xFF));
+                ms.WriteByte(_directAddrType);
+                if (_directAddrType == 0x02)
+                {
+                    byte[] d = Encoding.UTF8.GetBytes(_directDomain);
+                    ms.WriteByte((byte)d.Length);
+                    ms.Write(d, 0, d.Length);
+                }
+                else
+                {
+                    ms.Write(_directAddr, 0, _directAddr.Length);
+                }
+                return ms.ToArray();
+            }
+        }
+
+        private async Task<bool> StartSplitAsync(bool packetUp)
+        {
+            _split = new XhttpSplitClient(_cfg, packetUp, BuildDirectVlessHeader());
+            _splitEnabled = true;
+            if (!await _split.StartAsync()) { Close(); return false; }
+            return true;
+        }
+
+        private async Task<bool> StartWsAsync()
+        {
+            _ws = new WsTransport(_cfg);
+            _wsEnabled = true;
+            if (!await _ws.ConnectAsync()) { Close(); return false; }
+            return true;
+        }
+
         public async Task<bool> StartAsync()
         {
             try
             {
+                if (_cfg.IsWs && _directMode)
+                    return await StartWsAsync();
+                // xhttp split-режимы (stream-up / packet-up) держат собственные
+                // download/upload-соединения и НЕ трогают this.Socket. Диспатчим до открытия сокета.
+                if (_cfg.IsXhttp && _directMode)
+                {
+                    var xmode = _cfg.ResolveXhttpMode();
+                    if (xmode == XhttpTransportMode.PacketUp) return await StartSplitAsync(true);
+                    if (xmode == XhttpTransportMode.StreamUp) return await StartSplitAsync(false);
+                    // stream-one — проваливаемся в обычный путь ниже
+                }
                 string targetHost = string.IsNullOrEmpty(VlessVpnPlugin.ServerIp)
                     ? _cfg.Address : VlessVpnPlugin.ServerIp;
 
@@ -1161,6 +1306,22 @@ namespace VlessVpnTask
 
         public async System.Threading.Tasks.Task WriteUnderlyingAsync(byte[] data)
         {
+            if (_wsEnabled)
+            {
+                byte[] payload = data ?? new byte[0];
+                if (_vlessHeaderBuffer != null)
+                {
+                    byte[] c = new byte[_vlessHeaderBuffer.Length + payload.Length];
+                    System.Buffer.BlockCopy(_vlessHeaderBuffer, 0, c, 0, _vlessHeaderBuffer.Length);
+                    if (payload.Length > 0)
+                        System.Buffer.BlockCopy(payload, 0, c, _vlessHeaderBuffer.Length, payload.Length);
+                    payload = c;
+                    _vlessHeaderBuffer = null;
+                }
+                await _ws.SendAsync(payload);
+                return;
+            }
+            if (_splitEnabled) { await _split.WriteUpAsync(data); return; }
             if (_h2Enabled)
             {
                 byte[] payload;
@@ -1308,6 +1469,8 @@ namespace VlessVpnTask
 
         private async Task<byte[]> ReadUnderlyingRecordAsync()
         {
+            if (_wsEnabled) return await _ws.ReceiveAsync();
+            if (_splitEnabled) return await _split.ReadDownAsync();
             if (_h2Enabled)
             {
                 while (true)
@@ -1450,6 +1613,6 @@ namespace VlessVpnTask
             return $"sid={sid} {st} data={pay}b ({d.Length}b всего)";
         }
 
-        public void Close() { try { _writer?.Dispose(); _reader?.Dispose(); Socket?.Dispose(); } catch { }; try { _outStream?.Dispose(); } catch { } }
+        public void Close() { try { _writer?.Dispose(); _reader?.Dispose(); Socket?.Dispose(); } catch { }; try { _outStream?.Dispose(); } catch { }; try { _split?.Close(); } catch { }; try { _ws?.Close(); } catch { } }
     }
 }

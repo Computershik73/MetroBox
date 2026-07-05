@@ -11,6 +11,7 @@ using System.Runtime.Serialization;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Media;
 using Windows.UI;
+using Windows.Data.Json; // Добавлен стандартный UWP JSON-парсер
 
 namespace VlessApp
 {
@@ -69,7 +70,6 @@ namespace VlessApp
             }
         }
 
-        // Обновлено: текст пинга больше не дописывается в детали конфигурации
         public string DisplayText => $"{Type} / {Security} | {Address}:{Port}";
 
         // Выделение активного сервера
@@ -201,21 +201,18 @@ namespace VlessApp
             {
                 try
                 {
-                    // Очищаем префикс
                     string base64Part = value.Substring(7).Trim();
-
-                    // Безопасное восстановление padding-символов '=' для стабильного декодирования в .NET
                     base64Part = base64Part.Replace("-", "+").Replace("_", "/");
                     int padding = base64Part.Length % 4;
                     if (padding > 0) base64Part += new string('=', 4 - padding);
 
                     byte[] bytes = Convert.FromBase64String(base64Part);
-                    return Encoding.UTF8.GetString(bytes); // Возвращаем раскодированный русский UTF-8 текст
+                    return Encoding.UTF8.GetString(bytes);
                 }
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"[HEADER DECODE ERROR] {ex.Message}");
-                    return value; // В случае сбоя безопасно возвращаем сырую строку
+                    return value;
                 }
             }
             return value;
@@ -241,7 +238,37 @@ namespace VlessApp
 
                     using (var client = new HttpClient(handler))
                     {
-                        client.DefaultRequestHeaders.UserAgent.ParseAdd("v2rayNG/1.8.5");
+                        var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
+                        if (!localSettings.Values.ContainsKey("v_DeviceHwid"))
+                        {
+                            string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+                            var rnd = new Random();
+                            var sb = new System.Text.StringBuilder();
+                            for (int i = 0; i < 16; i++)
+                            {
+                                sb.Append(chars[rnd.Next(chars.Length)]);
+                            }
+                            localSettings.Values["v_DeviceHwid"] = sb.ToString();
+                        }
+                        string hwid = localSettings.Values["v_DeviceHwid"] as string;
+
+                        client.DefaultRequestHeaders.UserAgent.Clear();
+                        client.DefaultRequestHeaders.UserAgent.TryParseAdd("Happ/3.13.0");
+
+                        if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
+                        client.DefaultRequestHeaders.Add("X-Hwid", hwid);
+
+                        if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
+                        client.DefaultRequestHeaders.Add("X-Device-Os", "Android");
+
+                        if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
+                        client.DefaultRequestHeaders.Add("X-Ver-Os", "14");
+
+                        if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
+                        client.DefaultRequestHeaders.Add("X-Device-Model", "Samsung Galaxy S24");
+
+                        if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
+                        client.DefaultRequestHeaders.Add("X-App-Version", "3.13.0");
 
                         Debug.WriteLine($"[NETWORK] Отправляем запрос к: {input}");
                         var response = await client.GetAsync(input);
@@ -249,7 +276,6 @@ namespace VlessApp
 
                         var rawContent = await response.Content.ReadAsStringAsync();
 
-                        // Парсим реальные метаданные из HTTP-заголовков ответа сервера с поддержкой Base64
                         string announce = "";
                         string infoUrl = "";
                         string telegramUrl = "";
@@ -281,7 +307,6 @@ namespace VlessApp
 
                         var profiles = ParseSubscriptionData(rawContent, input);
 
-                        // Наполняем реальными метаданными, если они предоставлены провайдером
                         foreach (var p in profiles)
                         {
                             p.Description = announce;
@@ -311,18 +336,33 @@ namespace VlessApp
         }
 
         // =========================================================================
-        // 3. ДЕКОДИРОВАНИЕ ДАННЫХ
+        // 3. ДЕКОДИРОВАНИЕ ДАННЫХ И АВТОМАТИЧЕСКИЙ ВЫБОР JSON-ПАРСЕРА
         // =========================================================================
         private static List<VlessProfile> ParseSubscriptionData(string rawData, string groupName)
         {
-            string decodedText = rawData;
+            string decodedText = rawData.Trim();
 
-            if (!rawData.Contains("vless://"))
+            // Если это не ссылки vless:// и не JSON, пробуем Base64 декодирование
+            if (!decodedText.Contains("vless://") && !decodedText.StartsWith("[") && !decodedText.StartsWith("{"))
             {
-                string cleanData = rawData.Replace("\n", "").Replace("\r", "").Replace(" ", "");
-                decodedText = DecodeBase64Safe(cleanData);
+                string cleanData = decodedText.Replace("\n", "").Replace("\r", "").Replace(" ", "");
+                decodedText = DecodeBase64Safe(cleanData).Trim();
             }
 
+            // Проверяем: если подписка вернулась в виде JSON-структуры
+            if (decodedText.StartsWith("[") || decodedText.StartsWith("{"))
+            {
+                Debug.WriteLine("[PARSER] Обнаружен JSON-формат подписки. Запускаем JSON-парсер.");
+                var jsonList = ParseJsonSubscription(decodedText);
+                foreach (var p in jsonList)
+                {
+                    p.SubscriptionGroup = groupName;
+                }
+                Debug.WriteLine($"[PARSER] ИТОГО импортировано из JSON: {jsonList.Count}");
+                return jsonList;
+            }
+
+            // Стандартный построчный парсинг
             var list = new List<VlessProfile>();
             var lines = decodedText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
@@ -365,6 +405,180 @@ namespace VlessApp
                 Debug.WriteLine($"[BASE64 INFO] Текст не является Base64 ({ex.Message}). Распознаём как обычный текст.");
                 return text;
             }
+        }
+
+        // =========================================================================
+        // 4. ВСТРОЕННЫЙ JSON-ПАРСЕР ДЛЯ SING-BOX / XRAY КОНФИГУРАЦИЙ
+        // =========================================================================
+        private static List<VlessProfile> ParseJsonSubscription(string jsonText)
+        {
+            var list = new List<VlessProfile>();
+            try
+            {
+                if (JsonArray.TryParse(jsonText, out JsonArray rootArray))
+                {
+                    foreach (var val in rootArray)
+                    {
+                        if (val.ValueType == JsonValueType.Object)
+                        {
+                            var obj = val.GetObject();
+                            string remarks = GetJsonString(obj, "remarks", "Vless-Node");
+
+                            if (obj.ContainsKey("outbounds"))
+                            {
+                                var outbounds = GetJsonArray(obj, "outbounds");
+                                if (outbounds != null)
+                                {
+                                    foreach (var outVal in outbounds)
+                                    {
+                                        if (outVal.ValueType == JsonValueType.Object)
+                                        {
+                                            var outObj = outVal.GetObject();
+                                            string proto = GetJsonString(outObj, "protocol");
+
+                                            // Наш клиент работает только с VLESS-протоколом
+                                            if (string.Equals(proto, "vless", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                var profile = ParseVlessOutbound(outObj, remarks);
+                                                if (profile != null)
+                                                {
+                                                    list.Add(profile);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[JSON PARSE ERROR] {ex.Message}");
+            }
+            return list;
+        }
+
+        private static VlessProfile ParseVlessOutbound(JsonObject outObj, string remarks)
+        {
+            try
+            {
+                var profile = new VlessProfile { Name = remarks };
+
+                var settings = GetJsonObject(outObj, "settings");
+                if (settings != null)
+                {
+                    var vnext = GetJsonArray(settings, "vnext");
+                    if (vnext != null && vnext.Count > 0 && vnext[0].ValueType == JsonValueType.Object)
+                    {
+                        var serverObj = vnext[0].GetObject();
+                        profile.Address = GetJsonString(serverObj, "address");
+                        profile.Port = (int)GetJsonNumber(serverObj, "port", 443);
+
+                        var users = GetJsonArray(serverObj, "users");
+                        if (users != null && users.Count > 0 && users[0].ValueType == JsonValueType.Object)
+                        {
+                            var user = users[0].GetObject();
+                            profile.Uuid = GetJsonString(user, "id").Replace("-", "");
+                            profile.Flow = GetJsonString(user, "flow");
+                        }
+                    }
+                }
+
+                var ss = GetJsonObject(outObj, "streamSettings");
+                if (ss != null)
+                {
+                    profile.Type = GetJsonString(ss, "network", "tcp");
+                    profile.Security = GetJsonString(ss, "security", "none");
+
+                    var grpc = GetJsonObject(ss, "grpcSettings");
+                    if (grpc != null)
+                    {
+                        profile.Path = GetJsonString(grpc, "serviceName");
+                        profile.Host = GetJsonString(grpc, "authority");
+                    }
+
+                    var ws = GetJsonObject(ss, "wsSettings");
+                    if (ws != null)
+                    {
+                        profile.Path = GetJsonString(ws, "path");
+                        var headers = GetJsonObject(ws, "headers");
+                        if (headers != null)
+                        {
+                            profile.Host = GetJsonString(headers, "Host");
+                        }
+                    }
+
+                    var xhttp = GetJsonObject(ss, "xhttpSettings");
+                    if (xhttp == null) xhttp = GetJsonObject(ss, "splithttpSettings");
+                    if (xhttp != null)
+                    {
+                        profile.Path = GetJsonString(xhttp, "path");
+                        profile.Host = GetJsonString(xhttp, "host");
+                        profile.Mode = GetJsonString(xhttp, "mode");
+                    }
+
+                    var reality = GetJsonObject(ss, "realitySettings");
+                    if (reality != null)
+                    {
+                        profile.Sni = GetJsonString(reality, "serverName");
+                        profile.PublicKey = GetJsonString(reality, "publicKey");
+                        profile.ShortId = GetJsonString(reality, "shortId");
+                    }
+
+                    var tls = GetJsonObject(ss, "tlsSettings");
+                    if (tls != null)
+                    {
+                        profile.Sni = GetJsonString(tls, "serverName");
+                    }
+                }
+
+                if (string.IsNullOrEmpty(profile.Uuid) || string.IsNullOrEmpty(profile.Address))
+                    return null;
+
+                return profile;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[PARSE OUTBOUND ERROR] {ex.Message}");
+                return null;
+            }
+        }
+
+        // =========================================================================
+        // 5. ЗАЩИЩЕННЫЕ HELPER-МЕТОДЫ ДЛЯ ЧТЕНИЯ СТАНДАРТНОГО WINRT JSON-ДЕРЕВА
+        // =========================================================================
+        private static string GetJsonString(JsonObject obj, string key, string def = "")
+        {
+            if (obj == null || !obj.ContainsKey(key)) return def;
+            var val = obj.GetNamedValue(key);
+            if (val != null && val.ValueType == JsonValueType.String) return val.GetString();
+            return def;
+        }
+
+        private static double GetJsonNumber(JsonObject obj, string key, double def = 0)
+        {
+            if (obj == null || !obj.ContainsKey(key)) return def;
+            var val = obj.GetNamedValue(key);
+            if (val != null && val.ValueType == JsonValueType.Number) return val.GetNumber();
+            return def;
+        }
+
+        private static JsonObject GetJsonObject(JsonObject obj, string key)
+        {
+            if (obj == null || !obj.ContainsKey(key)) return null;
+            var val = obj.GetNamedValue(key);
+            if (val != null && val.ValueType == JsonValueType.Object) return val.GetObject();
+            return null;
+        }
+
+        private static JsonArray GetJsonArray(JsonObject obj, string key)
+        {
+            if (obj == null || !obj.ContainsKey(key)) return null;
+            var val = obj.GetNamedValue(key);
+            if (val != null && val.ValueType == JsonValueType.Array) return val.GetArray();
+            return null;
         }
     }
 }

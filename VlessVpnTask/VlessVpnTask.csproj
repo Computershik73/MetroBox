@@ -129,6 +129,8 @@
     <Compile Include="VlessConnection.cs" />
     <Compile Include="VlessVpnPlugin.cs" />
     <Compile Include="VpnBackgroundTask.cs" />
+    <Compile Include="WsTransport.cs" />
+    <Compile Include="XhttpSplit.cs" />
     <Compile Include="XhttpStreamOne.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -86,7 +86,7 @@ namespace VlessApp
             s["v_Flow"] = p.Flow ?? "";
             s["v_Alpn"] = p.Alpn ?? "";
             s["v_XhttpMode"] = p.Mode ?? "stream-one";
-            s["v_DebugLog"] = true;
+            s["v_DebugLog"] = false;
         }
 
         

@@ -11,6 +11,7 @@ using Windows.Networking.Connectivity;
 
 namespace VlessVpnTask
 {
+    internal enum XhttpTransportMode { StreamOne, StreamUp, PacketUp }
     internal class VlessConfig
     {
         public string Address { get; set; }
@@ -32,10 +33,30 @@ namespace VlessVpnTask
         public int XPaddingMin { get; set; } = 100;
         public int XPaddingMax { get; set; } = 1000;
 
+        public XhttpTransportMode ResolveXhttpMode()
+        {
+            string m = (XhttpMode ?? "").Trim().ToLowerInvariant();
+            switch (m)
+            {
+                case "packet-up":
+                case "packetup":
+                    return XhttpTransportMode.PacketUp;
+                case "stream-up":
+                case "streamup":
+                    return XhttpTransportMode.StreamUp;
+                default: // stream-one, one, auto, пусто -> прежний дефолт (не ломаем рабочую подписку)
+                    return XhttpTransportMode.StreamOne;
+            }
+        }
+
         // Определяет, включен ли режим XHTTP
         public bool IsXhttp =>
             string.Equals(Type, "xhttp", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(Type, "splithttp", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsWs =>
+            string.Equals(Type, "ws", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(Type, "websocket", StringComparison.OrdinalIgnoreCase);
 
         public string EffectiveXhttpMode
         {
@@ -223,7 +244,7 @@ namespace VlessVpnTask
 
                 // ИСПРАВЛЕНО: Режим переключается динамически в зависимости от конфига 
                 // (xhttp требует DirectMode, стандартный tcp будет работать через MUX)
-                bool direct = _config.IsXhttp;
+                bool direct = _config.IsXhttp || _config.IsWs;
 
                 FileLog.Important($"[VPN PLUGIN] Выбран режим: {(direct ? "DIRECT (xhttp без mux)" : "MUX")}");
 
