@@ -15,8 +15,14 @@ namespace VlessVpnTask
         private static BlockingCollection<string> _queue;
         private static System.Threading.Tasks.Task _worker;
         private static string _path;
+        private static string _prevPath;
+        private static long _written;
         private static volatile bool _started;
         private static readonly object _initLock = new object();
+
+        // Потолок одного файла лога. При превышении текущий уезжает в vpnlog.prev.txt,
+        // и запись продолжается в чистый файл. На диске максимум два файла ≈ 8 МБ.
+        private const long MaxBytes = 4L * 1024 * 1024;
 
         public static void Init()
         {
@@ -28,6 +34,12 @@ namespace VlessVpnTask
                 {
                     // System.IO по пути LocalFolder работает в UWP и быстрее WinRT-API.
                     _path = Path.Combine(ApplicationData.Current.LocalFolder.Path, "vpnlog.txt");
+                    _prevPath = Path.Combine(ApplicationData.Current.LocalFolder.Path, "vpnlog.prev.txt");
+                    // Каждый запуск начинает лог с нуля: раньше файл открывался только на
+                    // дозапись и рос бесконечно через все подключения. Прошлый лог не теряем —
+                    // он уезжает в vpnlog.prev.txt, что важно при разборе падения: после сбоя
+                    // обычно сразу переподключаются, и без этого предыдущий лог затёрся бы.
+                    Rotate();
                 }
                 catch { _path = null; }
 
@@ -111,6 +123,16 @@ namespace VlessVpnTask
             catch { /* поток-демон, тихо выходим при завершении процесса */ }
         }
 
+        // Текущий лог → vpnlog.prev.txt, старый prev удаляем. Вызывается при старте и при
+        // превышении MaxBytes. Всё в try/catch: диагностика не должна ломать VPN.
+        private static void Rotate()
+        {
+            if (_path == null) return;
+            try { if (File.Exists(_prevPath)) File.Delete(_prevPath); } catch { }
+            try { if (File.Exists(_path)) File.Move(_path, _prevPath); } catch { }
+            _written = 0;
+        }
+
         private static void FlushToDisk(string text)
         {
             if (_path == null || text.Length == 0) return;
@@ -123,9 +145,14 @@ namespace VlessVpnTask
                 {
                     w.Write(text);
                     w.Flush();
+                    _written = fs.Length; // точный размер, без пересчёта байт UTF-8
                 }
             }
             catch { /* диск занят/недоступен — пропускаем, трафик важнее лога */ }
+
+            // Длинная сессия под нагрузкой (YouTube) пишет мегабайты — не даём файлу
+            // расти неограниченно даже без перезапуска.
+            if (_written > MaxBytes) Rotate();
         }
     }
 }

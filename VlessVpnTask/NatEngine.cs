@@ -48,6 +48,11 @@ namespace VlessVpnTask
 
         public bool SendFinPending = false;
 
+        // Сколько ждём downstream после локального FIN, прежде чем гасить туннельный
+        // сокет. Ответ сервера почти всегда приходит за доли секунды; запас нужен
+        // только чтобы полузакрытые соединения не копились и не съедали слоты.
+        public const int HalfCloseGraceMs = 10000;
+
         public byte[] DnsServerIp = new byte[4];
         public readonly List<byte> DnsBuffer = new List<byte>();
         public DateTime DnsStartTime;
@@ -64,7 +69,7 @@ namespace VlessVpnTask
         public uint OsAckedSeq;          // наибольший ACK от ОС (сколько она подтвердила)
         public int OsWindow = 65535;    // последнее окно приёма, объявленное ОС
 
-        public VlessConnection DirectConn;   // персональное VLESS-соединение (direct-режим)
+        public IDirectConn DirectConn;       // персональное соединение VLESS/Shadowsocks (direct-режим)
         public int DirectSlotState;          // 0/1 — занят ли слот _directSlots
 
     }
@@ -161,9 +166,14 @@ namespace VlessVpnTask
 
         public bool DirectMode { get; set; }            // xhttp без mux
 
-        // Лимит одновременных Reality-handshake'ов в direct-режиме.
-        // Меньше = меньше нагрузка на CPU, но больше очередь. Подбирается под телефон.
-        private const int MaxDirectConns = 8;
+        // Лимит одновременных direct-соединений (слот держится всю жизнь flow'а).
+        // БЕЗ мультиплексора каждое соединение = свой дорогой Reality-хендшейк + флуд
+        // сервера, поэтому лимит низкий (8). С мультиплексором (вариант B) каждое
+        // соединение = дешёвый H2-стрим в общем туннеле (хендшейк один на туннель),
+        // поэтому лимит поднимаем — иначе YouTube с его 30-60 картинками стоит в очереди
+        // по 8 и грузится десятки секунд. 64 покрывает всплеск, влезает в пул мультиплексора
+        // (4 туннеля × ~60 стримов) и по памяти ≤ 64×128КБ приёмных окон.
+        private static readonly int MaxDirectConns = VlessConnection.UseH2Mux ? 64 : 8;
         private readonly SemaphoreSlim _directSlots = new SemaphoreSlim(MaxDirectConns, MaxDirectConns);
 
         // Привязывает сабстрим к наименее загруженному живому каналу (<8 сабстримов),
@@ -321,6 +331,29 @@ namespace VlessVpnTask
             _reaperTimer = new System.Threading.Timer(_ => ReapIdle(), null, 5000, 5000);
         }
 
+
+        // Мягкий сброс при смене сети (Wi-Fi ↔ LTE). Все живые соединения привязаны к
+        // СТАРОМУ физическому интерфейсу и после переключения мертвы, но сами об этом
+        // «не знают»: сокет не всегда получает ошибку, и приложение висит до ручного
+        // переподключения. Рвём всё разом — движок при этом НЕ останавливается, новые
+        // соединения поднимутся по требованию уже через новый интерфейс. Клиентским
+        // приложениям уходит FIN (внутри CloseConnLocal), поэтому они переоткрывают
+        // соединения сами, не дожидаясь своих таймаутов.
+        public void ResetForNetworkChange()
+        {
+            if (_stopped) return;
+
+            MuxCarrier[] carriers;
+            lock (_carriersLock) { carriers = _carriers.ToArray(); _carriers.Clear(); }
+            foreach (var car in carriers) { car.Running = false; try { car.Conn?.Close(); } catch { } }
+
+            var conns = _conns.Values.ToArray();
+            foreach (var c in conns) { try { CloseConnLocal(c); } catch { } }
+
+            _muxSessions.Clear();
+
+            FileLog.Important($"[NET] Сброс после смены сети: закрыто соединений {conns.Length}, несущих каналов {carriers.Length}.");
+        }
 
         public void Stop()
         {
@@ -653,8 +686,19 @@ public void SignalStop()
                 {
                     if (DirectMode)
                     {
-                        try { c.DirectConn?.Close(); } catch { }   // FIN серверу = закрытие сокета
-                        CloseConnLocal(c);
+                        // Локальный FIN означает только «клиент больше ничего не пришлёт»,
+                        // а не «соединение закрыто»: ответ сервера может быть ещё в пути.
+                        // Раньше мы гасили здесь весь туннельный сокет, и недочитанный
+                        // downstream пропадал — отсюда ответы, обрезанные на 262 байтах.
+                        // Полузакрытия у StreamSocket нет, поэтому даём downstream дочитаться
+                        // и закрываем по льготному таймауту, чтобы слоты не утекали.
+                        var halfClosed = c.DirectConn;
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(TcpConn.HalfCloseGraceMs);
+                            try { halfClosed?.Close(); } catch { }
+                            CloseConnLocal(c);
+                        });
                     }
                     else
                     {
@@ -704,17 +748,64 @@ public void SignalStop()
                              && !string.IsNullOrEmpty(c.DnsQueryDomain)
                              && (FakeDns.IsFakeIp(c.DstIp) || c.IsProxy);
 
-            var conn = new VlessConnection(Config, Channel);
+            bool isSs = Config != null && Config.IsShadowsocks;
+
+            // Цепочка Amnezia: реле доводит только до парного выходного узла
+            // (проверено — запрос к его IP через реле вернул живой ответ, а
+            // доменные назначения реле закрывает). Поэтому сначала поднимаем
+            // звено до реле с назначением «выходной узел», а настоящий адрес
+            // сайта уходит уже во втором звене поверх него.
+            VlessConnection chainOuter = null;
+            if (!isSs && Config != null &&
+                !string.IsNullOrEmpty(Config.ChainExitHost) && Config.ChainExitPort > 0)
+            {
+                byte[] exitIp;
+                if (VlessConnection.TryParseIpv4Public(Config.ChainExitHost, out exitIp))
+                {
+                    chainOuter = new VlessConnection(Config, Channel);
+                    chainOuter.ConfigureDirectIp(exitIp, false, (ushort)Config.ChainExitPort);
+                    if (!await chainOuter.StartAsync())
+                    {
+                        FileLog.Important("[CHAIN] Первое звено (реле) не поднялось.");
+                        try { chainOuter.Close(); } catch { }
+                        ReleaseDirectSlot(c);
+                        CloseConnLocal(c);
+                        return;
+                    }
+                    FileLog.Important($"[CHAIN] Первое звено поднято: реле → {Config.ChainExitHost}:{Config.ChainExitPort}.");
+                }
+                else
+                {
+                    FileLog.Important($"[CHAIN] Выходной узел '{Config.ChainExitHost}' не IPv4 — цепочку не строю.");
+                }
+            }
+
+            // Второе звено проверяется выходным узлом по ЕГО ключам REALITY —
+            // с ключами реле он отбрасывает на прикрытие. Поэтому конфиг тут
+            // свой: адрес, uuid и параметры reality берутся от выходного узла.
+            var connCfg = Config;
+            if (chainOuter != null)
+            {
+                connCfg = Config.CloneForChainExit();
+            }
+
+            IDirectConn conn = isSs ? (IDirectConn)new SsConnection(connCfg)
+                                    : new VlessConnection(connCfg, Channel);
+            if (chainOuter != null)
+            {
+                ((VlessConnection)conn).UseChainTransport(chainOuter);
+            }
             if (useDomain) conn.ConfigureDirectDomain(c.DnsQueryDomain, port);
             else conn.ConfigureDirectIp(c.DstIp, c.IsIpv6, port);
 
+            string proto = isSs ? "Shadowsocks" : "VLESS";
             string tgt = useDomain ? c.DnsQueryDomain
                                    : (c.IsIpv6 ? "[v6]" : $"{c.DstIp[0]}.{c.DstIp[1]}.{c.DstIp[2]}.{c.DstIp[3]}");
-            FileLog.Important($"[DIRECT] Открываю VLESS к {tgt}:{port} (key {c.Key})");
+            FileLog.Important($"[DIRECT] Открываю {proto} к {tgt}:{port} (key {c.Key})");
 
             if (!await conn.StartAsync())
             {
-                FileLog.Important($"[DIRECT] Не удалось поднять VLESS к {tgt}:{port}");
+                FileLog.Important($"[DIRECT] Не удалось поднять {proto} к {tgt}:{port}");
                 try { conn.Close(); } catch { }
                 ReleaseDirectSlot(c);
                 CloseConnLocal(c);
@@ -743,22 +834,25 @@ public void SignalStop()
             }
         }
 
-        // Насос downstream: читает payload из персонального VLESS-соединения и вливает в ОС.
-        private async Task DirectReadLoopAsync(TcpConn c, VlessConnection conn)
+        // Насос downstream: читает payload из персонального соединения и вливает в ОС.
+        private async Task DirectReadLoopAsync(TcpConn c, IDirectConn conn)
         {
+            long got = 0;
+            string why = "локальное соединение закрыто";
             try
             {
                 while (!_stopped && c.State != TcpState.Closed)
                 {
                     byte[] data;
-                    try { data = await conn.ReadVlessPayloadAsync(); }
-                    catch (ObjectDisposedException) { break; }
-                    catch (System.Runtime.InteropServices.COMException) { break; }   // I/O aborted при закрытии
-                    catch (NullReferenceException) { break; }
+                    try { data = await conn.ReadPayloadAsync(); }
+                    catch (ObjectDisposedException) { why = "сокет освобождён"; break; }
+                    catch (System.Runtime.InteropServices.COMException) { why = "ввод-вывод прерван"; break; }   // I/O aborted при закрытии
+                    catch (NullReferenceException) { why = "сокет освобождён"; break; }
 
-                    if (data == null) break;
+                    if (data == null) { why = "сервер закрыл поток"; break; }
                     if (data.Length == 0) continue;
                     if (c.State == TcpState.Closed) break;
+                    got += data.Length;
                     c.LastActivityUtc = DateTime.UtcNow;
                     if (FileLog.Verbose)
                     {
@@ -770,9 +864,13 @@ public void SignalStop()
                     await InjectDataToOs(c, data);
                 }
             }
-            catch (Exception ex) { FileLog.W($"[DIRECT READ] {c.Key}: {ex.Message}"); }
+            catch (Exception ex) { why = ex.Message; FileLog.W($"[DIRECT READ] {c.Key}: {ex.Message}"); }
             finally
             {
+                // Цикл раньше завершался молча, поэтому «сервер закрыл соединение» и
+                // «сервер молчит, а мы ждём» выглядели в логе совершенно одинаково —
+                // никак. А это два разных диагноза, и различие между ними решающее.
+                FileLog.Important($"[DIRECT<-] {c.Key}: downstream завершён ({why}), принято {got}б.");
                 try { conn.Close(); } catch { }
                 CloseConnLocal(c);
             }

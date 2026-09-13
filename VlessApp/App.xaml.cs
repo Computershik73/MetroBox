@@ -28,6 +28,10 @@ namespace VlessApp
 
         protected override void OnLaunched(LaunchActivatedEventArgs e)
         {
+            // Журнал начинается заново на каждый запуск: его отправляют целиком,
+            // и разбирать склейку за все прошлые сессии невозможно.
+            if (Window.Current.Content == null) AppLog.Reset();
+
             Frame rootFrame = Window.Current.Content as Frame;
 
             if (rootFrame == null)

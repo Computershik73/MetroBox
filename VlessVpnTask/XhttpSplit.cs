@@ -305,12 +305,13 @@ namespace VlessVpnTask
                     FileLog.Important($"[XHTTP {_modeName}] download <<< {status}");
                     FileLog.Important($"[XHTTP {_modeName}] download Content-Type='{ctype}' chunked={chunked}");
 
-                    if (!status.Contains(" 200"))
+                    int code = NetDiag.ParseStatus(status);
+                    if (code != 200)
                     {
-                        FileLog.Important($"[XHTTP {_modeName}] СЕРВЕР НЕ ПРИНЯЛ download (не 200). " +
-                                          $"Вероятно сервер не в режиме {_modeName} или неверный path/session.");
+                        NetDiag.ReportHttp($"XHTTP {_modeName} download", code, "200 OK");
                         return false;
                     }
+                    NetDiag.ClearError();
 
                     _dec.Chunked = chunked;
                     int rem = idx + 4;
@@ -321,8 +322,8 @@ namespace VlessVpnTask
 
                 if (DateTime.UtcNow > deadline)
                 {
-                    FileLog.Important($"[XHTTP {_modeName}] таймаут заголовков download (15с). " +
-                                      $"Если ALPN='h2' — сервер форсит HTTP/2, split-over-h1 не пройдёт.");
+                    NetDiag.Report($"XHTTP {_modeName}", "сервер не прислал заголовки ответа за 15 секунд " +
+                                   "(если ALPN='h2', сервер форсит HTTP/2 и split-over-h1 не пройдёт)");
                     return false;
                 }
             }
@@ -401,8 +402,9 @@ namespace VlessVpnTask
             if (_postRespCount++ == 0)
             {
                 FileLog.Important($"[XHTTP packet-up] upload POST <<< {status}");
-                if (!status.Contains(" 200"))
-                    FileLog.Important("[XHTTP packet-up] СЕРВЕР НЕ ПРИНЯЛ upload (не 200). Проверьте режим на сервере.");
+                int upCode = NetDiag.ParseStatus(status);
+                if (upCode != 200)
+                    NetDiag.ReportHttp("XHTTP packet-up upload", upCode, "200 OK");
             }
 
             int contentLen = 0; bool chunked = false;

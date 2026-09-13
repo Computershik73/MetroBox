@@ -29,6 +29,8 @@ namespace VlessVpnTask
 
         // распарсенный downstream (полезные данные DATA на stream 1)
         private readonly Queue<byte[]> _downstream = new Queue<byte[]>();
+        private long _rxDataTotal; // всего принято downstream-байт (диагностика)
+        private long _txDataTotal; // всего отправлено upstream-байт (диагностика)
 
         // окна отправки (сколько МЫ можем послать); server INITIAL_WINDOW_SIZE по умолчанию 65535
         private readonly object _wlock = new object();
@@ -102,6 +104,7 @@ namespace VlessVpnTask
         // DATA-кадр на stream 1 (payload[off..off+len])
         public byte[] FrameData(byte[] data, int off, int len, bool endStream)
         {
+            _txDataTotal += len;
             var o = new List<byte>(9 + len);
             WriteFrameHeader(o, len, 0x0, (byte)(endStream ? 0x1 : 0x0), 1);
             for (int i = 0; i < len; i++) o.Add(data[off + i]);
@@ -219,6 +222,7 @@ namespace VlessVpnTask
                             Array.Copy(payload, dataStart, d, 0, dataLen);
                             _downstream.Enqueue(d);
                             buffered = dataLen;
+                            _rxDataTotal += dataLen;
                         }
 
                         // Окно возвращаем СРАЗУ только на часть кадра, которую не держим в памяти
@@ -232,7 +236,11 @@ namespace VlessVpnTask
                             if (sid == 1) QueueWindowUpdate(1, immediate);   // окно потока
                         }
 
-                        if (sid == 1 && (flags & 0x1) != 0) { StreamClosed = true; SignalWindow(); }
+                        if (sid == 1 && (flags & 0x1) != 0)
+                        {
+                            FileLog.Important($"[H2] поток закрыт сервером (END_STREAM), downstream={_rxDataTotal}b, upstream={_txDataTotal}b, статус={Status}");
+                            StreamClosed = true; SignalWindow();
+                        }
                         break;
                     }
                 case 0x1: // HEADERS
@@ -254,8 +262,13 @@ namespace VlessVpnTask
                         break;
                     }
                 case 0x3: // RST_STREAM
-                    if (sid == 1) { StreamClosed = true; SignalWindow(); }
-                    break;
+                    {
+                        int err = payload.Length >= 4
+                            ? ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) : -1;
+                        FileLog.Important($"[H2] <<< RST_STREAM sid={sid} error={err}, downstream={_rxDataTotal}b, upstream={_txDataTotal}b, статус={Status} (сервер сбросил поток)");
+                        if (sid == 1) { StreamClosed = true; SignalWindow(); }
+                        break;
+                    }
                 case 0x4: // SETTINGS
                     if ((flags & 0x1) == 0) { ApplyServerSettings(payload); QueueSettingsAck(); }
                     break;
@@ -263,8 +276,15 @@ namespace VlessVpnTask
                     if ((flags & 0x1) == 0) QueuePingAck(payload);
                     break;
                 case 0x7: // GOAWAY
-                    StreamClosed = true; SignalWindow();
-                    break;
+                    {
+                        int lastId = payload.Length >= 4
+                            ? ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) : -1;
+                        int err = payload.Length >= 8
+                            ? ((payload[4] << 24) | (payload[5] << 16) | (payload[6] << 8) | payload[7]) : -1;
+                        FileLog.Important($"[H2] <<< GOAWAY lastStream={lastId} error={err} (сервер закрыл соединение)");
+                        StreamClosed = true; SignalWindow();
+                        break;
+                    }
                 case 0x8: // WINDOW_UPDATE
                     {
                         int inc = ((payload[0] & 0x7F) << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3];

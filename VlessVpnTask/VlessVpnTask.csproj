@@ -123,9 +123,19 @@
   <ItemGroup>
     <Compile Include="FakeDns.cs" />
     <Compile Include="FileLog.cs" />
+    <Compile Include="AwgConfig.cs" />
+    <Compile Include="ChainStream.cs" />
+    <Compile Include="AwgCrypto.cs" />
+    <Compile Include="AwgEngine.cs" />
+    <Compile Include="AwgTunnel.cs" />
+    <Compile Include="H2Mux.cs" />
+    <Compile Include="LiveTile.cs" />
     <Compile Include="Http2Conn.cs" />
     <Compile Include="NatEngine.cs" />
+    <Compile Include="NetDiag.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SsConnection.cs" />
+    <Compile Include="Vision.cs" />
     <Compile Include="VlessConnection.cs" />
     <Compile Include="VlessVpnPlugin.cs" />
     <Compile Include="VpnBackgroundTask.cs" />

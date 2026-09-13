@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.Serialization.Json;
+using System.Text;
 using System.Threading.Tasks;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.UI.Xaml;
@@ -40,9 +41,65 @@ namespace VlessApp
 
         public string ArrowIcon => IsExpanded ? "\uE70D" : "\uE76C";
 
-        public string LastUpdatedText => _allItems.Count > 0
-            ? $"Обновлено: {_allItems[0].LastUpdated:dd.MM.yyyy HH:mm}"
-            : "Импортировано: не обновлялось";
+        // \u0427\u0442\u043E \u043F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C \u0432 \u0448\u0430\u043F\u043A\u0435. \u041A\u043B\u044E\u0447\u043E\u043C \u0433\u0440\u0443\u043F\u043F\u044B \u0441\u043B\u0443\u0436\u0438\u0442 \u0441\u0441\u044B\u043B\u043A\u0430 \u043F\u043E\u0434\u043F\u0438\u0441\u043A\u0438, \u0438 \u0434\u043E
+        // \u044D\u0442\u043E\u0433\u043E \u043E\u043D\u0430 \u043F\u043E\u043F\u0430\u0434\u0430\u043B\u0430 \u0432 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A \u043A\u0430\u043A \u0435\u0441\u0442\u044C \u2014 \u0443 \u0441\u0441\u044B\u043B\u043E\u043A Amnezia \u0432 \u043D\u0451\u043C
+        // \u043E\u0441\u0442\u0430\u0432\u0430\u043B\u043E\u0441\u044C \u00ABvpn:/\u00BB, \u0443 \u043E\u0431\u044B\u0447\u043D\u044B\u0445 \u043F\u043E\u0434\u043F\u0438\u0441\u043E\u043A \u2014 \u0432\u0435\u0441\u044C URL.
+        public string Title
+        {
+            get
+            {
+                if (_allItems.Count > 0 && !string.IsNullOrWhiteSpace(_allItems[0].GroupTitle))
+                    return _allItems[0].GroupTitle;
+                return FriendlyName(Key);
+            }
+        }
+
+        public static string FriendlyName(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return "\u0411\u0435\u0437 \u0433\u0440\u0443\u043F\u043F\u044B";
+
+            if (key.StartsWith("vpn://", StringComparison.OrdinalIgnoreCase))
+                return "\u041F\u043E\u0434\u043F\u0438\u0441\u043A\u0430 Amnezia";
+
+            if (key.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith("ssconf://", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string forUri = key.StartsWith("ssconf://", StringComparison.OrdinalIgnoreCase)
+                        ? "https://" + key.Substring("ssconf://".Length)
+                        : key;
+                    string host = new Uri(forUri).Host;
+                    if (!string.IsNullOrEmpty(host)) return host;
+                }
+                catch { }
+            }
+            return key;
+        }
+
+        public string LastUpdatedText
+        {
+            get
+            {
+                if (_allItems.Count == 0) return "Импортировано: не обновлялось";
+                string when = _allItems[0].LastUpdated.ToString("dd.MM.yyyy HH:mm");
+                if (MainPage.IsAutoRefreshableGroup(Key)) return when + " | Автообновление - 1 ч.";
+                if (MainPage.IsRefreshableGroup(Key)) return when + " | Только вручную";
+                return when;
+            }
+        }
+
+        public bool IsAmnezia => !string.IsNullOrEmpty(Key) &&
+                                Key.StartsWith("vpn://", StringComparison.OrdinalIgnoreCase);
+
+        public Visibility CountryPickerVisibility => IsAmnezia ? Visibility.Visible : Visibility.Collapsed;
+
+        // Счётчик устройств и срок подписки — приходят от шлюза вместе с конфигом.
+        public string AmneziaInfo => _allItems.Count > 0 ? _allItems[0].AmneziaInfo : "";
+
+        public Visibility AmneziaInfoVisibility => !string.IsNullOrEmpty(AmneziaInfo)
+            ? Visibility.Visible : Visibility.Collapsed;
 
         public string Description => _allItems.Count > 0 ? _allItems[0].Description : "";
         public string InfoUrl => _allItems.Count > 0 ? _allItems[0].InfoUrl : "";
@@ -78,6 +135,9 @@ namespace VlessApp
     public sealed partial class MainPage : Page
     {
         public static bool IsRedirectingToSettings = false;
+
+        // Одна кисть на все акцентные элементы вместо шести одинаковых.
+        private static readonly Brush AccentBrush = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
 
         private VpnManager _vpnManager = new VpnManager();
         private List<VlessProfile> _allProfiles = new List<VlessProfile>();
@@ -194,12 +254,17 @@ namespace VlessApp
         {
             try
             {
+                // У VLESS адрес туннеля всегда 11.16.1.1, а у AmneziaWG он свой из конфига
+                // (например 10.8.1.47), поэтому нужный адрес плагин кладёт в v_TunIp.
+                string tunIp = Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunIp"] as string;
+                if (string.IsNullOrEmpty(tunIp)) tunIp = "11.16.1.1";
+
                 var hostNames = Windows.Networking.Connectivity.NetworkInformation.GetHostNames();
                 foreach (var hn in hostNames)
                 {
                     if (hn.Type == HostNameType.Ipv4)
                     {
-                        if (hn.RawName == "11.16.1.1")
+                        if (hn.RawName == tunIp || hn.RawName == "11.16.1.1")
                         {
                             return true;
                         }
@@ -242,6 +307,8 @@ namespace VlessApp
                         status = VpnManagementConnectionStatus.Disconnected;
                     }
 
+                    RefreshTransportWarning(status == VpnManagementConnectionStatus.Connected);
+
                     if (status == VpnManagementConnectionStatus.Connected)
                     {
                         if (!_isConnected)
@@ -250,23 +317,25 @@ namespace VlessApp
                             _activeTime = TimeSpan.Zero;
                             _timer.Start();
 
-                            GlowRing1.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
-                            GlowRing2.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
+                            GlowRing1.BorderBrush = AccentBrush;
+                            GlowRing2.BorderBrush = AccentBrush;
                             GlowRing1.Opacity = 0.15;
                             GlowRing2.Opacity = 0.35;
-                            PowerIcon.Foreground = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
+                            PowerIcon.Foreground = AccentBrush;
 
                             TimeText.Visibility = Visibility.Visible;
-                            TimeText.Foreground = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
+                            TimeText.Foreground = AccentBrush;
 
                             ConnectBtnText.Text = "ПОДКЛЮЧЕН";
-                            ConnectBtnText.Foreground = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
-                            ConnectBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(255, 56, 189, 248));
+                            ConnectBtnText.Foreground = AccentBrush;
+                            ConnectBtn.BorderBrush = AccentBrush;
                             ConnectBtn.Background = this.Resources["ButtonGlowConnected"] as Brush;
 
                             string connName = _selectedProfile != null ? _selectedProfile.Name : mine.ProfileName;
                             StatusText.Text = $"Подключен (глобально): {connName}";
                             CheckConnectionText.Text = "Проверить текущее подключение";
+
+                            UpdateLiveTileConnected(connName);
                         }
                     }
                     else if (status == VpnManagementConnectionStatus.Connecting)
@@ -279,6 +348,11 @@ namespace VlessApp
                     }
                     else // Disconnected
                     {
+                        // Плитку снимаем и здесь, а не только в Disconnect() плагина:
+                        // если процесс туннеля умер аварийно, его Disconnect не отработал
+                        // и плитка осталась бы висеть «подключено».
+                        VlessVpnTask.LiveTile.ShowDisconnected();
+
                         if (_isConnected)
                         {
                             HardResetMainPage();
@@ -287,6 +361,9 @@ namespace VlessApp
                 }
                 else
                 {
+                    VlessVpnTask.LiveTile.ShowDisconnected();
+                    RefreshTransportWarning(false);
+
                     // Если профиль не найден в ОС и мы были подключены — сбрасываем кэш и перезапускаемся.
                     // В штатном отключенном состоянии не сбрасываем кэш каждую секунду, чтобы не вызывать повторный поиск.
                     if (_isConnected)
@@ -299,6 +376,66 @@ namespace VlessApp
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[STATUS CHECK FAIL] {ex.Message}");
+            }
+        }
+
+        // Туннель может стоять поднятым, а сервер при этом отвергать каждое соединение:
+        // в логе это выглядит как поток «HTTP/1.1 429» на апгрейд WS, а в интерфейсе — как
+        // рабочий VPN, через который ничего не грузится. Плагин живёт в отдельном процессе
+        // фоновой задачи, поэтому причину он кладёт в LocalSettings пакета, а мы её здесь
+        // забираем. Ключ снимается при успешном хендшейке и в начале Connect(), так что
+        // видимая надпись всегда относится к текущей сессии.
+        private void RefreshTransportWarning(bool connected)
+        {
+            try
+            {
+                if (!connected)
+                {
+                    if (TransportWarnText.Visibility != Visibility.Collapsed)
+                        TransportWarnText.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                string why = VlessVpnTask.NetDiag.ReadLastError();
+
+                if (string.IsNullOrEmpty(why))
+                {
+                    if (TransportWarnText.Visibility != Visibility.Collapsed)
+                        TransportWarnText.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                string text = "Внимание: " + why;
+                if (TransportWarnText.Text != text) TransportWarnText.Text = text;
+                if (TransportWarnText.Visibility != Visibility.Visible)
+                    TransportWarnText.Visibility = Visibility.Visible;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[TRANSPORT WARN] {ex.Message}");
+            }
+        }
+
+        // Дублирует то, что делает плагин: если он по какой-то причине не смог обновить
+        // плитку, приложение поправит её, как только само увидит поднятый туннель.
+        private void UpdateLiveTileConnected(string connName)
+        {
+            try
+            {
+                var p = _selectedProfile;
+                string details = "";
+                if (p != null)
+                {
+                    string proto = p.IsShadowsocks ? "shadowsocks"
+                                 : p.IsAmneziaWg ? "amneziawg"
+                                 : "vless";
+                    details = string.IsNullOrEmpty(p.Address) ? proto : $"{proto} · {p.Address}";
+                }
+                VlessVpnTask.LiveTile.ShowConnected(connName, details);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[TILE] {ex.Message}");
             }
         }
 
@@ -334,20 +471,33 @@ namespace VlessApp
                     return;
                 }
 
-                // Блокировка XTLS-Vision
-                if (!string.IsNullOrEmpty(_selectedProfile.Flow) &&
-                    _selectedProfile.Flow.IndexOf("vision", StringComparison.OrdinalIgnoreCase) >= 0)
+                AppLog.Section("ПОДКЛЮЧЕНИЕ: " + (_selectedProfile.Name ?? "?"));
+                AppLog.W("  " + VlessProfile.Describe(_selectedProfile));
+
+                string badSecurity = VlessProfile.WhySecurityWontWork(_selectedProfile);
+                if (badSecurity != null) AppLog.W("  ВНИМАНИЕ: " + badSecurity);
+
+                // XTLS-Vision (flow=xtls-rprx-vision) и WebSocket теперь реализованы
+                // (Vision.cs + WsTransport.cs), поэтому прежние блокирующие диалоги убраны.
+
+                // Транспорт, для которого у нас нет кода, раньше молча уезжал в ветку
+                // raw TCP и не поднимался: пользователь видел «сервер не отвечает»
+                // вместо «этого транспорта тут нет». gRPC ниже — частный случай с
+                // собственным текстом, он проверяется первым.
+                string badTransport = VlessProfile.WhyUnsupportedTransport(_selectedProfile);
+                if (badTransport != null &&
+                    !string.Equals(_selectedProfile.Type, "grpc", StringComparison.OrdinalIgnoreCase))
                 {
-                    var visionDialog = new ContentDialog
+                    AppLog.W("  ОТКАЗ: " + badTransport);
+                    var trDialog = new ContentDialog
                     {
-                        Title = "Протокол не поддерживается",
-                        Content = "Протокол XTLS Vision (flow=xtls-rprx-vision) пока не поддерживается данным приложением.\n\n" +
-                                  "Пожалуйста, выберите конфигурацию с другим типом flow (например, без flow или с классическим Reality).",
+                        Title = "Транспорт не поддерживается",
+                        Content = $"Профиль «{_selectedProfile.Name}»: {badTransport}.\n\n" +
+                                  "Поддерживаются: TCP (в том числе XTLS-Vision), WebSocket и XHTTP/SplitHTTP.",
                         CloseButtonText = "ОК"
                     };
-
-                    await visionDialog.ShowAsync();
-                    StatusText.Text = "Подключение отменено (Vision не поддерживается).";
+                    await trDialog.ShowAsync();
+                    StatusText.Text = "Подключение отменено (транспорт не поддерживается).";
                     return;
                 }
 
@@ -363,26 +513,28 @@ namespace VlessApp
                     };
 
                     await grpcDialog.ShowAsync();
+                    AppLog.W("  ОТКАЗ: транспорт gRPC не реализован");
                     StatusText.Text = "Подключение отменено (gRPC не поддерживается).";
                     return;
                 }
 
-                if (string.Equals(_selectedProfile.Type, "ws", StringComparison.OrdinalIgnoreCase))
+                // Shadowsocks: сразу отсекаем шифры, которых у нас нет (2022-blake3-*,
+                // старые потоковые). Иначе профиль молча не подключался бы.
+                if (_selectedProfile.IsShadowsocks &&
+                    !VlessProfile.IsSupportedSsMethod(_selectedProfile.Method))
                 {
-                    var xhttpDialog = new ContentDialog
+                    var ssDialog = new ContentDialog
                     {
-                        Title = "Не поддерживается",
-                        Content = "Транспорт WebSocket пока не поддерживается. " +
-                                  "Если вам нужен обход белых списков, используйте сервера с TCP транспортом ",
-                        CloseButtonText = "Отмена"
+                        Title = "Шифр не поддерживается",
+                        Content = $"Shadowsocks-шифр «{_selectedProfile.Method}» не реализован.\n\n" +
+                                  "Поддерживаются: chacha20-ietf-poly1305, aes-128-gcm, aes-192-gcm, aes-256-gcm.",
+                        CloseButtonText = "ОК"
                     };
 
-                    var choice = await xhttpDialog.ShowAsync();
-                    if (choice != ContentDialogResult.Primary)
-                    {
-                        StatusText.Text = "Подключение отменено.";
-                        return;
-                    }
+                    AppLog.W("  ОТКАЗ: шифр Shadowsocks «" + (_selectedProfile.Method ?? "?") + "» не реализован");
+                    await ssDialog.ShowAsync();
+                    StatusText.Text = "Подключение отменено (шифр Shadowsocks не поддерживается).";
+                    return;
                 }
 
                 if (string.Equals(_selectedProfile.Type, "xhttp", StringComparison.OrdinalIgnoreCase) ||
@@ -414,6 +566,7 @@ namespace VlessApp
                 }
 
                 IsRedirectingToSettings = true;
+                AppLog.W("  настройки записаны, туннель поднимает фоновая задача (дальше — vpnlog.txt)");
                 _vpnManager.WriteSettings(_selectedProfile);
 
                 await ForceDisconnectActiveProfileAsync();
@@ -702,6 +855,58 @@ namespace VlessApp
             return null;
         }
 
+        // Часть подписки может не импортироваться: у sing-box-клиентов (Exclave)
+        // протоколов больше, чем у нас. StatusText в этой вёрстке скрыт, поэтому
+        // молчание было полным — пользователь видел укороченный список и считал,
+        // что «конфиг не работает». Показываем разницу явно и только когда она есть.
+        private async Task ShowImportReportAsync(int added)
+        {
+            try
+            {
+                var rep = VlessProfile.LastImport;
+                if (rep == null) return;
+                if (rep.Skipped.Count == 0 && rep.Warnings.Count == 0) return;
+
+                var sb = new StringBuilder();
+                sb.Append("Добавлено серверов: ").Append(added).AppendLine();
+
+                if (rep.Skipped.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.Append("Пропущено: ").Append(rep.Skipped.Count)
+                      .Append(" (").Append(rep.SkippedSummary()).AppendLine(")");
+                    sb.AppendLine("Эти протоколы приложением не поддерживаются.");
+                }
+
+                if (rep.Warnings.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("Импортированы, но не подключатся:");
+                    int shown = 0;
+                    foreach (var w in rep.Warnings)
+                    {
+                        if (shown++ == 6) { sb.AppendLine("  … и ещё " + (rep.Warnings.Count - 6)); break; }
+                        sb.Append("  • ").AppendLine(w);
+                    }
+                }
+
+                sb.AppendLine();
+                sb.Append("Подробности — в файле ").Append(AppLog.LogFileName).Append('.');
+
+                var dlg = new ContentDialog
+                {
+                    Title = "Импортировано не всё",
+                    Content = sb.ToString(),
+                    CloseButtonText = "ОК"
+                };
+                await dlg.ShowAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[IMPORT REPORT] {ex.Message}");
+            }
+        }
+
         private async Task ProcessAndAddImportTextAsync(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
@@ -718,8 +923,7 @@ namespace VlessApp
                     var incomingSubscriptions = newProfiles
                         .Select(p => p.SubscriptionGroup)
                         .Distinct()
-                        .Where(g => g.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                                     g.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        .Where(IsRefreshableGroup)
                         .ToList();
 
                     foreach (var subUrl in incomingSubscriptions)
@@ -728,20 +932,31 @@ namespace VlessApp
                     }
 
                     PopulateMetadata(newProfiles, text);
+                    foreach (var g in incomingSubscriptions) ExpandAmneziaRows(newProfiles, g);
                     _allProfiles.AddRange(newProfiles);
 
                     UpdateGroupedUI();
                     await SaveProfilesAsync();
                     StatusText.Text = $"Импортировано {newProfiles.Count} серверов";
+                    await ShowImportReportAsync(newProfiles.Count);
                 }
                 else
                 {
                     StatusText.Text = "В импортированных данных не найдено профилей";
+                    await ShowImportReportAsync(0);
                 }
+            }
+            catch (AmneziaApi.UnsupportedConfigException ex)
+            {
+                StatusText.Text = "Конфиг получен, но не разобран.";
+                await ShowUnsupportedConfigAsync(ex);
             }
             catch (Exception ex)
             {
                 StatusText.Text = "Ошибка импорта: " + ex.Message;
+                // Для ссылок Amnezia показываем лог обмена: причина отказа
+                // почти всегда в теле ответа шлюза, а не в тексте исключения.
+                if (AmneziaLink.IsAmneziaLink(text)) await ShowAmneziaErrorAsync(ex);
             }
             finally
             {
@@ -757,26 +972,128 @@ namespace VlessApp
             }
         }
 
-        private void Item_Tapped(object sender, TappedRoutedEventArgs e)
+        // Подписка Amnezia приходит одним выданным сервером, но стран в ней
+        // два десятка. Разворачиваем их в обычные строки списка — конфиг под
+        // каждой запрашивается при нажатии.
+        private static void ExpandAmneziaRows(List<VlessProfile> profiles, string groupName)
+        {
+            var issued = profiles.FirstOrDefault(p => p.IsAmneziaRow && !p.AmneziaNotIssued);
+            if (issued == null) return;
+            profiles.AddRange(AmneziaApi.BuildCountryRows(issued, groupName));
+        }
+
+        // Запросить конфиг для строки, под которой его ещё нет.
+        private async Task IssueAmneziaRowAsync(VlessProfile row)
+        {
+            var sub = AmneziaLink.TryGetApiSubscription(row.SubscriptionGroup);
+            if (sub == null)
+            {
+                StatusText.Text = "Не удалось прочитать ключ подписки из ссылки.";
+                return;
+            }
+            sub.ServerCountryCode = row.AmneziaCountryCode;
+            sub.ServiceProtocol = row.AmneziaProtocol;
+
+            AmneziaApi.ClearLog();
+            AmneziaApi.Log($"Запрос конфига для строки списка: {row.AmneziaCountryCode}/{row.AmneziaCountryName}, протокол {row.AmneziaProtocol}.");
+
+            string was = row.CleanPingText;
+            row.CleanPingText = "Запрашиваем...";
+            try
+            {
+                var fetched = await AmneziaApi.FetchAsync(sub, row.SubscriptionGroup);
+                var issued = fetched.FirstOrDefault();
+                if (issued == null)
+                {
+                    row.CleanPingText = was;
+                    StatusText.Text = "Шлюз не выдал конфиг для этой страны.";
+                    return;
+                }
+
+                // Заменяем строку на месте, остальные не трогаем: ранее выданные
+                // конфиги могут остаться рабочими, и терять их незачем.
+                int idx = _allProfiles.IndexOf(row);
+                issued.GroupTitle = row.GroupTitle;
+                issued.GroupTitleCustom = row.GroupTitleCustom;
+                if (idx >= 0) _allProfiles[idx] = issued; else _allProfiles.Add(issued);
+
+                // Список стран и сведения о подписке обновились — раздаём всем строкам.
+                foreach (var p in _allProfiles.Where(p => p.SubscriptionGroup == row.SubscriptionGroup))
+                {
+                    p.AmneziaCountries = issued.AmneziaCountries;
+                    p.AmneziaInfo = issued.AmneziaInfo;
+                }
+
+                UpdateGroupedUI();
+                await SaveProfilesAsync();
+
+                StatusText.Text = $"Проверяем {issued.Address}...";
+                await PingServerAsync(issued);
+
+                // Конфиг к этому моменту уже выдан, вставлен в список и сохранён.
+                // Неудачный замер задержки — не отказ выдачи, и сообщать о нём
+                // как об ошибке нельзя: пользователь считал, что запрос не прошёл,
+                // и повторял его, зря перевыпуская ключи.
+                string ping = issued.CleanPingText ?? "";
+                bool pingFailed = ping.StartsWith("Таймаут") || ping.StartsWith("Ошибка");
+                SelectProfile(issued);
+                if (pingFailed)
+                {
+                    StatusText.Text = $"Конфиг получен: {issued.Name}. Задержку измерить не удалось.";
+                    AmneziaApi.Log($"  выданный узел {issued.Address}:{issued.Port} не ответил на пробу ({ping}). " +
+                                   "Конфиг сохранён, подключение возможно.");
+                }
+                else
+                {
+                    StatusText.Text = $"Конфиг получен: {issued.Name} ({ping})";
+                }
+            }
+            catch (AmneziaApi.UnsupportedConfigException ex)
+            {
+                row.CleanPingText = was;
+                await ShowUnsupportedConfigAsync(ex);
+            }
+            catch (Exception ex)
+            {
+                row.CleanPingText = was;
+                StatusText.Text = "Не удалось получить конфиг.";
+                await ShowAmneziaErrorAsync(ex);
+            }
+        }
+
+        private async void Item_Tapped(object sender, TappedRoutedEventArgs e)
         {
             var grid = sender as Grid;
             var profile = grid?.DataContext as VlessProfile;
-            if (profile != null)
+            if (profile == null) return;
+
+            // Строка страны Amnezia без конфига: сначала получаем его у шлюза.
+            if (profile.AmneziaNotIssued)
             {
-                _selectedProfile = profile;
-                if (!_isConnected) StatusText.Text = $"Выбран: {profile.Name}";
-
-                _vpnManager.WriteSettings(profile);
-
-                foreach (var p in _allProfiles)
-                {
-                    p.IsSelected = (p == profile);
-                }
-
-                var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
-                localSettings.Values["v_LastSelectedAddress"] = profile.Address;
-                localSettings.Values["v_LastSelectedPort"] = profile.Port;
+                await IssueAmneziaRowAsync(profile);
+                return;
             }
+
+            SelectProfile(profile);
+        }
+
+        private void SelectProfile(VlessProfile profile)
+        {
+            if (profile == null || string.IsNullOrEmpty(profile.Address)) return;
+
+            _selectedProfile = profile;
+            if (!_isConnected) StatusText.Text = $"Выбран: {profile.Name}";
+
+            _vpnManager.WriteSettings(profile);
+
+            foreach (var p in _allProfiles)
+            {
+                p.IsSelected = (p == profile);
+            }
+
+            var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
+            localSettings.Values["v_LastSelectedAddress"] = profile.Address;
+            localSettings.Values["v_LastSelectedPort"] = profile.Port;
         }
 
         private void ProfilesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1037,11 +1354,63 @@ namespace VlessApp
 
         private string ReconstructVlessUrl(VlessProfile p)
         {
-            return $"vless://{p.Uuid}@{p.Address}:{p.Port}?type={p.Type}&security={p.Security}&sni={p.Sni}&pbk={p.PublicKey}&sid={p.ShortId}#{Uri.EscapeDataString(p.Name)}";
+            // У AmneziaWG нет ссылочного формата — делимся исходным .conf.
+            if (p.IsAmneziaWg) return p.AwgConfig ?? "";
+            if (p.IsShadowsocks)
+            {
+                // SIP002: userinfo = base64url(method:password) без паддинга.
+                string userInfo = Convert.ToBase64String(
+                        System.Text.Encoding.UTF8.GetBytes($"{p.Method}:{p.Password}"))
+                    .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                // prefix хранится в hex — в ссылку он идёт как percent-encoded UTF-8,
+                // ровно так же, как его пишет сам Outline.
+                string rawPrefix = VlessProfile.PrefixFromHex(p.SsPrefix);
+                string query = string.IsNullOrEmpty(rawPrefix)
+                    ? "" : "?prefix=" + Uri.EscapeDataString(rawPrefix);
+                return $"ss://{userInfo}@{p.Address}:{p.Port}/{query}#{Uri.EscapeDataString(p.Name)}";
+            }
+            // Ссылка обязана пережить цикл «поделиться → импортировать обратно»: любое
+            // потерянное поле молча меняет профиль. Так терялся flow — профиль с
+            // xtls-rprx-vision после реимпорта становился обычным и уходил в MUX-режим
+            // вместо DIRECT, то есть вёл себя совсем иначе, чем исходная ссылка.
+            var q = new List<string>();
+            Action<string, string> add = (k, v) =>
+            {
+                if (!string.IsNullOrEmpty(v)) q.Add(k + "=" + Uri.EscapeDataString(v));
+            };
+
+            add("type", p.Type);
+            add("security", p.Security);
+            add("encryption", "none");          // в ссылках VLESS поле обязательное
+            add("sni", p.Sni);
+            // PublicKey хранится в обычном base64 (парсер его туда переводит), а в ссылке
+            // он должен быть base64url без паддинга — иначе «+» в query другие клиенты
+            // прочитают как пробел и ключ развалится.
+            add("pbk", string.IsNullOrEmpty(p.PublicKey)
+                ? null
+                : p.PublicKey.TrimEnd('=').Replace('+', '-').Replace('/', '_'));
+            add("sid", p.ShortId);
+            add("flow", p.Flow);
+            add("path", p.Path);
+            add("host", p.Host);
+            add("alpn", p.Alpn);
+            add("mode", p.Mode);
+
+            // UUID парсер хранит без дефисов; отдаём в каноническом виде — так его
+            // примут и сторонние клиенты.
+            string uuid = p.Uuid;
+            Guid g;
+            if (Guid.TryParseExact(uuid ?? "", "N", out g)) uuid = g.ToString("D");
+
+            return $"vless://{uuid}@{p.Address}:{p.Port}?{string.Join("&", q)}"
+                 + $"#{Uri.EscapeDataString(p.Name ?? "")}";
         }
 
         private string ReconstructJson(VlessProfile p)
         {
+            if (p.IsAmneziaWg) return p.AwgConfig ?? "";
+            if (p.IsShadowsocks)
+                return $"{{\n  \"server\": \"{p.Address}\",\n  \"server_port\": {p.Port},\n  \"method\": \"{p.Method}\",\n  \"password\": \"{p.Password}\"\n}}";
             return $"{{\n  \"server\": \"{p.Address}\",\n  \"port\": {p.Port},\n  \"uuid\": \"{p.Uuid}\",\n  \"type\": \"{p.Type}\",\n  \"security\": \"{p.Security}\",\n  \"sni\": \"{p.Sni}\",\n  \"public_key\": \"{p.PublicKey}\",\n  \"short_id\": \"{p.ShortId}\"\n}}";
         }
 
@@ -1075,10 +1444,31 @@ namespace VlessApp
             }
         }
 
+        // Группы, которые можно перезапросить по их же ключу. Ключ Outline-профилей —
+        // сам ssconf://-адрес, а он такой же перевыпускаемый источник, как и подписка.
+        // Группу можно перезапросить по требованию пользователя.
+        internal static bool IsRefreshableGroup(string group)
+        {
+            return !string.IsNullOrEmpty(group) &&
+                   (group.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                    group.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                    group.StartsWith("ssconf://", StringComparison.OrdinalIgnoreCase) ||
+                    group.StartsWith("vpn://", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Группу можно перезапрашивать САМИМ, без участия пользователя.
+        // Подписки Amnezia Premium (группа — ссылка vpn://) сюда намеренно не
+        // входят: каждый такой запрос идёт к платному API за новым конфигом,
+        // и делать это в фоне по таймеру нельзя. Обновляются только по кнопке.
+        internal static bool IsAutoRefreshableGroup(string group)
+        {
+            return IsRefreshableGroup(group) &&
+                   !group.StartsWith("vpn://", StringComparison.OrdinalIgnoreCase);
+        }
+
         private async Task PerformSubscriptionUpdateAsync(string url)
         {
-            if (string.IsNullOrEmpty(url) || (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
-                return;
+            if (!IsRefreshableGroup(url)) return;
 
             StatusText.Text = "Обновление...";
             try
@@ -1086,9 +1476,19 @@ namespace VlessApp
                 var newProfiles = await VlessProfile.ProcessInputAsync(url);
                 if (newProfiles.Count > 0)
                 {
+                    // Своё имя подписки переживает обновление: профили пересоздаются,
+                    // и иначе его затёрло бы то, что пришло от сервера.
+                    var renamed = _allProfiles.FirstOrDefault(p => p.SubscriptionGroup == url && p.GroupTitleCustom);
+                    string customTitle = renamed != null ? renamed.GroupTitle : null;
+
                     _allProfiles.RemoveAll(p => p.SubscriptionGroup == url);
 
                     PopulateMetadata(newProfiles, url);
+                    if (!string.IsNullOrEmpty(customTitle))
+                    {
+                        foreach (var p in newProfiles) { p.GroupTitle = customTitle; p.GroupTitleCustom = true; }
+                    }
+                    ExpandAmneziaRows(newProfiles, url);
                     _allProfiles.AddRange(newProfiles);
 
                     UpdateGroupedUI();
@@ -1109,8 +1509,7 @@ namespace VlessApp
         private async Task CheckAndAutoUpdateSubscriptionsAsync()
         {
             var subscriptionsToUpdate = _allProfiles
-                .Where(p => p.SubscriptionGroup.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                            p.SubscriptionGroup.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                .Where(p => IsAutoRefreshableGroup(p.SubscriptionGroup))
                 .GroupBy(p => p.SubscriptionGroup)
                 .Where(g => (DateTime.Now - g.First().LastUpdated).TotalHours >= 1)
                 .Select(g => g.Key)
@@ -1126,18 +1525,334 @@ namespace VlessApp
             }
         }
 
+        // Amnezia Premium выдаёт ОДИН активный конфиг на устройство, поэтому
+        // страна тут не «ещё один сервер в списке», а переключатель: новый
+        // запрос к шлюзу отзывает прежний конфиг. Ровно так же это устроено
+        // в официальном клиенте, где страны показаны радиокнопками.
+        private async void PickAmneziaCountry_Click(object sender, RoutedEventArgs e)
+        {
+            var group = (sender as Button)?.DataContext as ProfileGroup;
+            if (group == null) return;
+
+            var current = _allProfiles.FirstOrDefault(p => p.SubscriptionGroup == group.Key);
+            if (current == null) return;
+
+            var countries = AmneziaApi.DeserializeCountries(current.AmneziaCountries);
+            if (countries.Count == 0)
+            {
+                StatusText.Text = "Шлюз не прислал список стран — обновите подписку.";
+                await new ContentDialog
+                {
+                    Title = "Список стран пуст",
+                    Content = "Шлюз Amnezia не прислал available_countries. Нажмите «обновить» у подписки и попробуйте снова.",
+                    PrimaryButtonText = "Понятно"
+                }.ShowAsync();
+                return;
+            }
+
+            var list = new ListView
+            {
+                SelectionMode = ListViewSelectionMode.Single,
+                ItemsSource = countries,
+                Height = 320
+            };
+            var preselected = countries.FirstOrDefault(c =>
+                string.Equals(c.Code, current.AmneziaCountryCode, StringComparison.OrdinalIgnoreCase));
+            if (preselected != null) list.SelectedItem = preselected;
+
+            var dialog = new ContentDialog
+            {
+                Title = "Страна подключения",
+                Content = list,
+                PrimaryButtonText = "Переключить",
+                SecondaryButtonText = "Отмена",
+                DefaultButton = ContentDialogButton.Secondary
+            };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+            var chosen = list.SelectedItem as AmneziaApi.Country;
+            if (chosen == null) return;
+
+            var sub = AmneziaLink.TryGetApiSubscription(group.Key);
+            if (sub == null)
+            {
+                StatusText.Text = "Не удалось прочитать ключ подписки из ссылки.";
+                return;
+            }
+
+            sub.ServerCountryCode = chosen.Code;
+
+            // Протокол должен быть из числа доступных именно в этой стране.
+            // Если их несколько — спрашиваем, иначе VLESS невозможно было бы
+            // выбрать вообще: awg есть почти везде и всегда побеждал бы сам.
+            if (chosen.Protocols.Count > 1)
+            {
+                var protoList = new ListView
+                {
+                    SelectionMode = ListViewSelectionMode.Single,
+                    ItemsSource = chosen.Protocols.Select(p => p.ToUpperInvariant()).ToList()
+                };
+                string currentProto = (current.AmneziaProtocol ?? "").ToUpperInvariant();
+                var preProto = chosen.Protocols.Select(p => p.ToUpperInvariant())
+                                               .FirstOrDefault(p => p == currentProto);
+                protoList.SelectedItem = preProto ?? chosen.Protocols[0].ToUpperInvariant();
+
+                var protoDialog = new ContentDialog
+                {
+                    Title = $"Протокол · {chosen.Name}",
+                    Content = protoList,
+                    PrimaryButtonText = "Выбрать",
+                    SecondaryButtonText = "Отмена",
+                    DefaultButton = ContentDialogButton.Primary
+                };
+                if (await protoDialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+                string pickedProto = protoList.SelectedItem as string;
+                sub.ServiceProtocol = chosen.Protocols.FirstOrDefault(p =>
+                    string.Equals(p, pickedProto, StringComparison.OrdinalIgnoreCase)) ?? chosen.Protocols[0];
+            }
+            else if (chosen.Protocols.Count == 1)
+            {
+                sub.ServiceProtocol = chosen.Protocols[0];
+            }
+
+            // Ничего не меняется — не тратим запрос к платному API.
+            if (string.Equals(chosen.Code, current.AmneziaCountryCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(sub.ServiceProtocol, current.AmneziaProtocol, StringComparison.OrdinalIgnoreCase))
+            {
+                StatusText.Text = "Эта страна и протокол уже выбраны.";
+                return;
+            }
+
+            AmneziaApi.ClearLog();
+            AmneziaApi.Log($"Пользователь выбрал: страна {chosen.Code}/{chosen.Name}, " +
+                           $"протоколы страны [{(chosen.Protocols.Count == 0 ? "список пуст" : string.Join(", ", chosen.Protocols))}], " +
+                           $"запрашиваем протокол {sub.ServiceProtocol}. Было: {current.AmneziaCountryCode}/{current.AmneziaProtocol}.");
+
+            StatusText.Text = $"Переключаем на {chosen.Name} ({sub.ServiceProtocol})...";
+            try
+            {
+                var fetched = await AmneziaApi.FetchAsync(sub, group.Key);
+                if (fetched.Count == 0)
+                {
+                    StatusText.Text = "Шлюз не выдал конфиг для этой страны.";
+                    return;
+                }
+
+                var renamed = _allProfiles.FirstOrDefault(p => p.SubscriptionGroup == group.Key && p.GroupTitleCustom);
+                string customTitle = renamed != null ? renamed.GroupTitle : null;
+
+                _allProfiles.RemoveAll(p => p.SubscriptionGroup == group.Key);
+                foreach (var p in fetched)
+                {
+                    p.LastUpdated = DateTime.Now;
+                    if (!string.IsNullOrEmpty(customTitle)) { p.GroupTitle = customTitle; p.GroupTitleCustom = true; }
+                }
+                _allProfiles.AddRange(fetched);
+
+                _selectedProfile = null;
+                UpdateGroupedUI();
+                await SaveProfilesAsync();
+
+                // Выданный узел может быть недоступен из нашей сети — у Amnezia
+                // это обычное дело для части стран. Проверяем сразу: иначе
+                // единственным признаком была бы неудача подключения через
+                // восемь секунд таймаута на каждое соединение.
+                var issued = fetched[0];
+                StatusText.Text = $"Проверяем {issued.Address}...";
+                await PingServerAsync(issued);
+
+                string ping = issued.CleanPingText ?? "";
+                if (ping.StartsWith("Таймаут") || ping.StartsWith("Ошибка"))
+                {
+                    StatusText.Text = $"{chosen.Name}: сервер недоступен.";
+                    AmneziaApi.Log($"  выданный узел {issued.Address}:{issued.Port} не отвечает ({ping}).");
+                    await new ContentDialog
+                    {
+                        Title = "Сервер не отвечает",
+                        Content = $"Страна переключена на {chosen.Name}, конфиг получен, но узел " +
+                                  $"{issued.Address}:{issued.Port} не отвечает на подключение.\n\n" +
+                                  "Скорее всего он заблокирован в вашей сети. Попробуйте другую страну " +
+                                  "или другой протокол для этой же страны.",
+                        PrimaryButtonText = "Понятно"
+                    }.ShowAsync();
+                }
+                else
+                {
+                    StatusText.Text = $"Страна переключена: {chosen.Name} ({ping})";
+                }
+            }
+            catch (AmneziaApi.UnsupportedConfigException ex)
+            {
+                StatusText.Text = "Конфиг получен, но не разобран.";
+                await ShowUnsupportedConfigAsync(ex);
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "Не удалось переключить страну.";
+                await ShowAmneziaErrorAsync(ex);
+            }
+        }
+
+        // Любая неудача с API Amnezia показывается вместе с полным логом обмена
+        // и кладёт его в буфер: без этого причина отказа оставалась невидимой.
+        private async Task ShowAmneziaErrorAsync(Exception ex)
+        {
+            string log = AmneziaApi.GetLog();
+
+            var logBox = new TextBox
+            {
+                Text = log,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.NoWrap,
+                Height = 260,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 10
+            };
+
+            var panel = new StackPanel();
+            panel.Children.Add(new TextBlock
+            {
+                Text = ex.Message,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Лог обмена скопирован в буфер обмена.",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            panel.Children.Add(logBox);
+
+            try
+            {
+                var data = new Windows.ApplicationModel.DataTransfer.DataPackage();
+                data.SetText(log);
+                Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data);
+            }
+            catch (Exception clip)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AMNEZIA API] Буфер обмена недоступен: {clip.Message}");
+            }
+
+            await new ContentDialog
+            {
+                Title = "Ошибка Amnezia API",
+                Content = panel,
+                PrimaryButtonText = "Понятно"
+            }.ShowAsync();
+        }
+
+        // Шлюз выдал конфиг протокола, который мы ещё не разбираем. Показываем
+        // обезличенную структуру ответа и кладём её в буфер: по ней дописывается
+        // разбор, а ключи и адреса из неё уже вычищены.
+        private async Task ShowUnsupportedConfigAsync(AmneziaApi.UnsupportedConfigException ex)
+        {
+            var text = new TextBox
+            {
+                Text = ex.Dump,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.NoWrap,
+                Height = 300,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11
+            };
+
+            var panel = new StackPanel();
+            panel.Children.Add(new TextBlock
+            {
+                Text = ex.Message + "\n\nСтруктура ответа скопирована в буфер обмена — ключи и адреса из неё убраны.",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            panel.Children.Add(text);
+
+            try
+            {
+                var data = new Windows.ApplicationModel.DataTransfer.DataPackage();
+                data.SetText(ex.Dump);
+                Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data);
+            }
+            catch (Exception clip)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AMNEZIA API] Буфер обмена недоступен: {clip.Message}");
+            }
+
+            System.Diagnostics.Debug.WriteLine("[AMNEZIA API] Структура неразобранного конфига:\n" + ex.Dump);
+
+            await new ContentDialog
+            {
+                Title = "Протокол пока не поддержан",
+                Content = panel,
+                PrimaryButtonText = "Понятно"
+            }.ShowAsync();
+        }
+
+        private async void RenameSubscription_Click(object sender, RoutedEventArgs e)
+        {
+            var group = (sender as Button)?.DataContext as ProfileGroup;
+            if (group == null) return;
+
+            var input = new TextBox
+            {
+                Text = group.Title,
+                PlaceholderText = "Имя подписки",
+                AcceptsReturn = false,
+                SelectionStart = 0,
+                SelectionLength = group.Title != null ? group.Title.Length : 0
+            };
+
+            var dialog = new ContentDialog
+            {
+                Title = "Переименовать подписку",
+                Content = input,
+                PrimaryButtonText = "Сохранить",
+                SecondaryButtonText = "Отмена"
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+            string name = (input.Text ?? "").Trim();
+            // Пустое имя не ошибка: это возврат к имени по умолчанию, которое
+            // выводится из ссылки. Иначе стереть своё имя было бы нечем.
+            foreach (var p in _allProfiles.Where(p => p.SubscriptionGroup == group.Key))
+            {
+                p.GroupTitle = name;
+                p.GroupTitleCustom = !string.IsNullOrEmpty(name);
+            }
+
+            UpdateGroupedUI();
+            await SaveProfilesAsync();
+            StatusText.Text = string.IsNullOrEmpty(name) ? "Имя подписки сброшено." : $"Подписка переименована: {name}";
+        }
+
         private async void DeleteSubscription_Click(object sender, RoutedEventArgs e)
         {
             var menuItem = sender as Button;
             var group = menuItem?.DataContext as ProfileGroup;
-            if (group != null)
+            if (group == null) return;
+
+            int count = _allProfiles.Count(p => p.SubscriptionGroup == group.Key);
+            var dialog = new ContentDialog
             {
-                _allProfiles.RemoveAll(p => p.SubscriptionGroup == group.Key);
-                UpdateGroupedUI();
-                await SaveProfilesAsync();
-                StatusText.Text = "Подписка удалена.";
-                _selectedProfile = null;
-            }
+                Title = "Удалить подписку?",
+                Content = $"«{group.Title}» и все серверы из неё ({count} шт.) будут удалены. Отменить это будет нельзя.",
+                PrimaryButtonText = "Удалить",
+                SecondaryButtonText = "Отмена",
+                DefaultButton = ContentDialogButton.Secondary
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+            _allProfiles.RemoveAll(p => p.SubscriptionGroup == group.Key);
+            UpdateGroupedUI();
+            await SaveProfilesAsync();
+            StatusText.Text = "Подписка удалена.";
+            _selectedProfile = null;
         }
 
         private async void PingGroup_Click(object sender, RoutedEventArgs e)
@@ -1146,12 +1861,22 @@ namespace VlessApp
             var group = button?.DataContext as ProfileGroup;
             if (group != null)
             {
+                // В подписке Amnezia проверяемы только выданные vless-узлы:
+                // у невыданных строк адреса ещё нет, а awg работает по UDP.
+                // Считаем их отдельно, чтобы итог не выглядел так, будто
+                // проверили всё и всё молчит.
+                int checkedCount = 0, skipped = 0;
                 StatusText.Text = "Пингуем...";
                 foreach (var profile in group)
                 {
+                    bool measurable = !profile.AmneziaNotIssued && !profile.IsAmneziaWg
+                                      && !string.IsNullOrEmpty(profile.Address) && profile.Port > 0;
                     await PingServerAsync(profile);
+                    if (measurable) checkedCount++; else skipped++;
                 }
-                StatusText.Text = "Пинг группы завершен.";
+                StatusText.Text = skipped > 0
+                    ? $"Проверено серверов: {checkedCount}. Пропущено (нет адреса или WireGuard): {skipped}."
+                    : "Пинг группы завершен.";
             }
         }
 
@@ -1215,6 +1940,24 @@ namespace VlessApp
                     {
                         _allProfiles.AddRange(list);
                     }
+
+                    // REALITY без SNI не поднимется никогда: сервер не отвечает на
+                    // такой ClientHello. Конфиги, сохранённые до исправления разбора,
+                    // возвращаем в состояние «не выдан», чтобы их можно было
+                    // перезапросить нажатием, а не гадать, почему нет соединения.
+                    foreach (var p in _allProfiles)
+                    {
+                        if (p.IsAmneziaRow && !p.AmneziaNotIssued &&
+                            string.Equals(p.Security, "reality", StringComparison.OrdinalIgnoreCase) &&
+                            string.IsNullOrEmpty(p.Sni))
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                $"[LOAD] {p.Name}: конфиг REALITY без SNI — помечен как невыданный, нужен перезапрос.");
+                            p.AmneziaNotIssued = true;
+                            p.Address = "";
+                            p.CleanPingText = "";
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -1242,6 +1985,29 @@ namespace VlessApp
 
         private async System.Threading.Tasks.Task PingServerAsync(VlessProfile profile)
         {
+            // AmneziaWG работает по UDP, и точка входа лежит внутри конфига
+            // WireGuard, а не в Address. TCP-проба тут бессмысленна: HostName
+            // с пустым адресом бросала исключение, и пользователь видел
+            // «Ошибка … hostname» — будто конфиг не выдали, хотя он уже сохранён.
+            // Строка страны без выданного конфига адреса ещё не имеет: шлюз
+            // отдаёт конфиги по одному, и узнать узел заранее нельзя. Проверять
+            // такую строку нечего — помечаем, а не пробуем подключиться.
+            if (profile.AmneziaNotIssued)
+            {
+                profile.CleanPingText = "Не выдан";
+                return;
+            }
+            if (profile.IsAmneziaWg)
+            {
+                profile.CleanPingText = "WireGuard";
+                return;
+            }
+            if (string.IsNullOrEmpty(profile.Address) || profile.Port <= 0)
+            {
+                profile.CleanPingText = "Нет адреса";
+                return;
+            }
+
             profile.CleanPingText = "Проверка...";
 
             var socket = new Windows.Networking.Sockets.StreamSocket();
@@ -1289,6 +2055,72 @@ namespace VlessApp
         private void AboutBackBtn_Click(object sender, RoutedEventArgs e)
         {
             AboutPageGrid.Visibility = Visibility.Collapsed;
+        }
+
+        // ===================== отправка журналов =====================
+
+        private List<Windows.Storage.StorageFile> _logFilesToShare;
+
+        // Разбирать «не подключается» без журналов нечем: applog.txt — что решило
+        // приложение при импорте и подключении, vpnlog.txt — что делал туннель.
+        private async void ShareLogBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var files = await CollectLogFilesAsync();
+            if (files.Count == 0)
+            {
+                ShareLogHint.Text = "Журнал пуст. Попробуйте подключиться к серверу и повторите отправку.";
+                return;
+            }
+
+            _logFilesToShare = files;
+            var names = new List<string>();
+            foreach (var f in files) names.Add(f.Name);
+            ShareLogHint.Text = "Отправляются файлы: " + string.Join(", ", names) + ".";
+
+            var dtm = DataTransferManager.GetForCurrentView();
+            dtm.DataRequested -= OnLogShareRequested;
+            dtm.DataRequested += OnLogShareRequested;
+            try
+            {
+                DataTransferManager.ShowShareUI();
+            }
+            catch (Exception ex)
+            {
+                ShareLogHint.Text = "Не удалось открыть окно отправки: " + ex.Message;
+            }
+        }
+
+        private void OnLogShareRequested(DataTransferManager sender, DataRequestedEventArgs args)
+        {
+            var files = _logFilesToShare;
+            if (files == null || files.Count == 0)
+            {
+                args.Request.FailWithDisplayText("Журнал пуст.");
+                return;
+            }
+            var data = args.Request.Data;
+            data.Properties.Title = "Журнал MetroBox";
+            data.Properties.Description = AppLog.EnvironmentInfo();
+            data.SetStorageItems(files);
+        }
+
+        private static async Task<List<Windows.Storage.StorageFile>> CollectLogFilesAsync()
+        {
+            var names = new[] { AppLog.LogFileName, "vpnlog.txt", "vpnlog.prev.txt", AmneziaApi.LogFileName };
+            var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+            var result = new List<Windows.Storage.StorageFile>();
+            foreach (var name in names)
+            {
+                try
+                {
+                    var file = await folder.TryGetItemAsync(name) as Windows.Storage.StorageFile;
+                    if (file == null) continue;
+                    var props = await file.GetBasicPropertiesAsync();
+                    if (props.Size > 0) result.Add(file);   // пустые файлы получателю не нужны
+                }
+                catch { /* один недоступный файл не должен ломать отправку остальных */ }
+            }
+            return result;
         }
     }
 }

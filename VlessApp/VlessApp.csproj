@@ -22,9 +22,20 @@
     <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
     <AppxAutoIncrementPackageRevision>False</AppxAutoIncrementPackageRevision>
     <AppxSymbolPackageEnabled>False</AppxSymbolPackageEnabled>
-    <AppxBundlePlatforms>arm</AppxBundlePlatforms>
+    <!-- Универсальный пакет: arm для Windows 10 Mobile, x86 и x64 для настольной Windows.
+         Мобильная система берёт из бандла свой arm-срез, десктопная — свой.
+
+         ARM64 сюда не входит намеренно: этой конфигурации нужен TargetPlatformMinVersion
+         не ниже 10.0.16299, а Windows 10 Mobile закончилась на 10.0.15254 — подняв
+         минимальную версию, мы потеряли бы телефоны. Отдельный пакет под ARM64 для
+         настольной Windows собирается так:
+           MSBuild VlessApp.sln /p:Configuration=Release /p:Platform=x86 /p:AppxBundle=Always
+             /p:AppxBundlePlatforms=arm64 /p:TargetPlatformMinVersion=10.0.16299.0
+         На ARM64-машинах работает и этот бандл — через слой совместимости x86. -->
+    <AppxBundlePlatforms>x86|x64|arm</AppxBundlePlatforms>
     <AppInstallerUpdateFrequency>1</AppInstallerUpdateFrequency>
     <AppInstallerCheckForUpdateFrequency>OnApplicationRun</AppInstallerCheckForUpdateFrequency>
+    <AppxBundle>Auto</AppxBundle>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x86'">
     <DebugSymbols>true</DebugSymbols>
@@ -130,6 +141,11 @@
       <DependentUpon>MainPage.xaml</DependentUpon>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="AmneziaApi.cs" />
+    <Compile Include="AppLog.cs" />
+    <Compile Include="AmneziaLink.cs" />
+    <Compile Include="CountryFlags.cs" />
+    <Compile Include="HappCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
   </ItemGroup>
@@ -141,13 +157,62 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Properties\Default.rd.xml" />
+    <Content Include="Assets\LockScreenLogo.scale-100.png" />
+    <Content Include="Assets\LockScreenLogo.scale-125.png" />
+    <Content Include="Assets\LockScreenLogo.scale-150.png" />
     <Content Include="Assets\LockScreenLogo.scale-200.png" />
+    <Content Include="Assets\LockScreenLogo.scale-400.png" />
+    <Content Include="Assets\SplashScreen.scale-100.png" />
+    <Content Include="Assets\SplashScreen.scale-125.png" />
+    <Content Include="Assets\SplashScreen.scale-150.png" />
     <Content Include="Assets\SplashScreen.scale-200.png" />
+    <Content Include="Assets\SplashScreen.scale-400.png" />
+    <Content Include="Assets\Square150x150Logo.scale-100.png" />
+    <Content Include="Assets\Square150x150Logo.scale-125.png" />
+    <Content Include="Assets\Square150x150Logo.scale-150.png" />
     <Content Include="Assets\Square150x150Logo.scale-200.png" />
+    <Content Include="Assets\Square150x150Logo.scale-400.png" />
+    <Content Include="Assets\Square310x310Logo.scale-100.png" />
+    <Content Include="Assets\Square310x310Logo.scale-125.png" />
+    <Content Include="Assets\Square310x310Logo.scale-150.png" />
+    <Content Include="Assets\Square310x310Logo.scale-200.png" />
+    <Content Include="Assets\Square310x310Logo.scale-400.png" />
+    <Content Include="Assets\Square44x44Logo.scale-100.png" />
+    <Content Include="Assets\Square44x44Logo.scale-125.png" />
+    <Content Include="Assets\Square44x44Logo.scale-150.png" />
     <Content Include="Assets\Square44x44Logo.scale-200.png" />
+    <Content Include="Assets\Square44x44Logo.scale-400.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-16.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-16_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-24.png" />
     <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-256.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-256_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-32.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-32_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-48.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-48_altform-unplated.png" />
+    <Content Include="Assets\Square71x71Logo.scale-100.png" />
+    <Content Include="Assets\Square71x71Logo.scale-125.png" />
+    <Content Include="Assets\Square71x71Logo.scale-150.png" />
+    <Content Include="Assets\Square71x71Logo.scale-200.png" />
+    <Content Include="Assets\Square71x71Logo.scale-400.png" />
     <Content Include="Assets\StoreLogo.png" />
+    <Content Include="Assets\StoreLogo.scale-100.png" />
+    <Content Include="Assets\StoreLogo.scale-125.png" />
+    <Content Include="Assets\StoreLogo.scale-150.png" />
+    <Content Include="Assets\StoreLogo.scale-200.png" />
+    <Content Include="Assets\StoreLogo.scale-400.png" />
+    <Content Include="Assets\TileIcon.scale-100.png" />
+    <Content Include="Assets\TileIcon.scale-125.png" />
+    <Content Include="Assets\TileIcon.scale-150.png" />
+    <Content Include="Assets\TileIcon.scale-200.png" />
+    <Content Include="Assets\TileIcon.scale-400.png" />
+    <Content Include="Assets\Wide310x150Logo.scale-100.png" />
+    <Content Include="Assets\Wide310x150Logo.scale-125.png" />
+    <Content Include="Assets\Wide310x150Logo.scale-150.png" />
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
+    <Content Include="Assets\Wide310x150Logo.scale-400.png" />
   </ItemGroup>
   <ItemGroup>
     <ApplicationDefinition Include="App.xaml">

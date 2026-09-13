@@ -132,8 +132,17 @@
 
             <!-- ВСПОМОГАТЕЛЬНЫЕ ПОДПИСИ -->
             <Grid Grid.Row="2" Margin="24,10,24,12">
-                <TextBlock x:Name="CheckConnectionText" Text="Проверить текущее подключение" FontSize="13" Foreground="#9CA3AF" HorizontalAlignment="Left" VerticalAlignment="Center" Tapped="CheckConnection_Tapped" IsTapEnabled="True"/>
-                <TextBlock x:Name="HideAllBtn" Text="Скрыть все" FontSize="13" Foreground="#3B82F6" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" Tapped="HideAll_Tapped"/>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="CheckConnectionText" Grid.Row="0" Text="Проверить текущее подключение" FontSize="13" Foreground="#9CA3AF" HorizontalAlignment="Left" VerticalAlignment="Center" Tapped="CheckConnection_Tapped" IsTapEnabled="True"/>
+                <TextBlock x:Name="HideAllBtn" Grid.Row="0" Text="Скрыть все" FontSize="13" Foreground="#3B82F6" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" Tapped="HideAll_Tapped"/>
+                <!-- Туннель может стоять поднятым, а сервер при этом отвергать каждое
+                     соединение (например 429 от исчерпанного Cloudflare Worker). Тогда
+                     кнопка честно горит «ПОДКЛЮЧЕН», и без этой строки причина видна
+                     только в файле лога. -->
+                <TextBlock x:Name="TransportWarnText" Grid.Row="1" Visibility="Collapsed" FontSize="11" Foreground="#F59E0B" LineHeight="15" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </Grid>
 
             <!-- СПИСОК СЕРВЕРОВ (ShowsScrollingPlaceholders=False выключает пустые блоки при скролле) -->
@@ -171,8 +180,9 @@
                                     <FontIcon Grid.Column="0" FontFamily="Segoe MDL2 Assets" Glyph="{x:Bind ArrowIcon, Mode=OneWay}" FontSize="11" Foreground="#3B82F6" VerticalAlignment="Top" Margin="0,4,12,0"/>
 
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                        <TextBlock Text="{x:Bind Key, Mode=OneWay}" FontSize="15" FontWeight="Bold" Foreground="White" TextWrapping="Wrap" MaxLines="1" TextTrimming="CharacterEllipsis"/>
-                                        <TextBlock Text="{x:Bind LastUpdatedText, Mode=OneWay}" FontSize="10" Foreground="#6B7280" Margin="0,2,0,4"/>
+                                        <TextBlock Text="{x:Bind Title, Mode=OneWay}" FontSize="15" FontWeight="Bold" Foreground="White" TextWrapping="Wrap" MaxLines="1" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{x:Bind LastUpdatedText, Mode=OneWay}" FontSize="10" Foreground="#6B7280" Margin="0,2,0,0"/>
+                                        <TextBlock Text="{x:Bind AmneziaInfo, Mode=OneWay}" Visibility="{x:Bind AmneziaInfoVisibility, Mode=OneWay}" FontSize="10" Foreground="#3B82F6" Margin="0,2,0,4"/>
 
                                         <StackPanel Orientation="Horizontal" Visibility="{x:Bind InfoButtonsVisibility, Mode=OneWay}" Margin="0,0,0,4">
                                             <Border Tapped="InfoLink_Tapped" DataContext="{x:Bind}" Background="#1E293B" CornerRadius="8" Padding="6,3,8,3" Margin="0,0,8,0" IsTapEnabled="True">
@@ -198,6 +208,9 @@
                                         </Button>
                                         <Button Background="Transparent" BorderThickness="0" Padding="6" Margin="0,0,2,0" Click="PingGroup_Click" DataContext="{x:Bind}">
                                             <FontIcon Glyph="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#9CA3AF"/>
+                                        </Button>
+                                        <Button Background="Transparent" BorderThickness="0" Padding="6" Margin="0,0,2,0" Click="RenameSubscription_Click" DataContext="{x:Bind}">
+                                            <FontIcon Glyph="&#xE8AC;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#9CA3AF"/>
                                         </Button>
                                         <Button Background="Transparent" BorderThickness="0" Padding="6" Click="DeleteSubscription_Click" DataContext="{x:Bind}">
                                             <FontIcon Glyph="&#xE712;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#9CA3AF"/>
@@ -276,18 +289,41 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <Border Grid.Column="0" Width="36" Height="36" CornerRadius="18" Background="#1D2447" VerticalAlignment="Center" Margin="0,0,12,0">
-                                            <FontIcon Glyph="&#xE12B;" FontFamily="Segoe MDL2 Assets" FontSize="15" Foreground="#3B82F6" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                                        </Border>
+                                        <!-- Флаг страны: скруглённый прямоугольник во всю плитку.
+                                             Рисуется в CountryFlags попиксельно — эмодзи-флаги
+                                             Windows показывает буквенным квадратиком, а не флагом. -->
+                                        <Grid Grid.Column="0" Width="40" Height="28" VerticalAlignment="Center" Margin="0,0,14,0">
+                                            <Border CornerRadius="5" BorderBrush="#2AFFFFFF" BorderThickness="1"
+                                                    Visibility="{x:Bind FlagVisibility, Mode=OneWay}">
+                                                <Border.Background>
+                                                    <ImageBrush ImageSource="{x:Bind FlagImage, Mode=OneWay}" Stretch="UniformToFill"/>
+                                                </Border.Background>
+                                            </Border>
+
+                                            <!-- Страна известна, но флага в наборе нет -->
+                                            <Border CornerRadius="5" Background="#1D2447"
+                                                    Visibility="{x:Bind CodeBadgeVisibility, Mode=OneWay}">
+                                                <TextBlock Text="{x:Bind CountryBadgeText, Mode=OneWay}"
+                                                           FontSize="13" FontWeight="Bold" Foreground="#3B82F6"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Border>
+
+                                            <!-- Страна не определилась -->
+                                            <Border CornerRadius="5" Background="#1D2447"
+                                                    Visibility="{x:Bind GlobeVisibility, Mode=OneWay}">
+                                                <FontIcon Glyph="&#xE12B;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                          Foreground="#3B82F6" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                            </Border>
+                                        </Grid>
 
                                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,10,0">
-                                            <TextBlock Text="{x:Bind Name, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontSize="11" Foreground="#6B7280" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                            <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}" FontSize="17" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontSize="11" Foreground="#6B7280" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" MaxLines="1"/>
                                         </StackPanel>
 
                                         <!-- Правая колонка: Вывод пинга и шеврон -->
                                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind CleanPingText, Mode=OneWay}" FontSize="12" Foreground="#10B981" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Text="{x:Bind CleanPingText, Mode=OneWay}" FontSize="12" Foreground="{x:Bind PingBrush, Mode=OneWay}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                             <FontIcon Glyph="&#xE00F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#4B5563" VerticalAlignment="Center"/>
                                         </StackPanel>
                                     </Grid>
@@ -326,7 +362,7 @@
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->
                             <TextBlock Text="MetroBox" FontSize="28" FontWeight="Bold" Foreground="#3B82F6" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Версия 1.1" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
+                            <TextBlock Text="Версия 1.3" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
 
                             <!-- Описание -->
                             <TextBlock Text="Современный клиент VLESS VPN для устройств под управлением Windows 10 Mobile." 
@@ -352,6 +388,19 @@
                                 <TextBlock Text="• " FontSize="14" Foreground="#9CA3AF" VerticalAlignment="Center"/>
                                 <HyperlinkButton Content="Поддержать проект" NavigateUri="https://pay.cloudtips.ru/p/83821e32" Foreground="#3B82F6" Padding="0" VerticalAlignment="Center" FontSize="14"/>
                             </StackPanel>
+
+                            <!-- Отправка журналов: без них разбирать «не подключается» нечем -->
+                            <TextBlock Text="Диагностика:" FontSize="14" FontWeight="Bold" Foreground="White" Margin="0,14,0,8"/>
+                            <TextBlock Text="Журнал очищается при каждом запуске приложения. Если сервер не подключается — повторите попытку, затем отправьте журнал."
+                                       FontSize="12" Foreground="#9CA3AF" TextWrapping="Wrap" LineHeight="16" Margin="0,0,0,10"/>
+                            <Button x:Name="ShareLogBtn" Click="ShareLogBtn_Click" HorizontalAlignment="Stretch"
+                                    Background="#1D2447" BorderBrush="#2A3566" BorderThickness="1" Padding="12,10">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <FontIcon Glyph="&#xE72D;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="#3B82F6" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Отправить журнал" Foreground="#E2E8F0" FontSize="14" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <TextBlock x:Name="ShareLogHint" Text="" FontSize="11" Foreground="#6B7280" TextWrapping="Wrap" Margin="0,8,0,0"/>
                         </StackPanel>
                     </Border>
                 </ScrollViewer>
