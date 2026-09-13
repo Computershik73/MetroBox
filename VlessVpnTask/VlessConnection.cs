@@ -465,7 +465,8 @@ namespace VlessVpnTask
 
         // Параметры выбранного сервером шифра (заполняются в ParseServerHello).
         private bool _sha384;      // 0x1302 → SHA-384 в KDF/транскрипте
-        private int _aesKeyLen = 16; // 16 для AES-128-GCM, 32 для AES-256-GCM
+        private int _aesKeyLen = 16; // 16 для AES-128-GCM, 32 для AES-256-GCM и ChaCha20
+        private bool _chacha;      // 0x1303 → ChaCha20-Poly1305 вместо AES-GCM
 
         private byte[] _clientPrivate, _clientPublic, _clientRandom, _realityAuthKey;
         private List<byte> _transcript = new List<byte>();
@@ -1117,12 +1118,13 @@ namespace VlessVpnTask
             _serverAppKey = Tls13Crypto.HkdfExpandLabel(_sha384, sAppTraffic, "key", new byte[0], _aesKeyLen);
             _serverAppIv = Tls13Crypto.HkdfExpandLabel(_sha384, sAppTraffic, "iv", new byte[0], 12);
 
-            _clientAppCryptoKey = Tls13Crypto.CreateAesGcmKey(_clientAppKey);
-            _serverAppCryptoKey = Tls13Crypto.CreateAesGcmKey(_serverAppKey);
+            _clientAppCryptoKey = _chacha ? null : Tls13Crypto.CreateAesGcmKey(_clientAppKey);
+            _serverAppCryptoKey = _chacha ? null : Tls13Crypto.CreateAesGcmKey(_serverAppKey);
         }
 
         public byte[] EncryptRecord(byte[] data)
         {
+            if (_chacha) return EncryptRecordInternal(_clientAppKey, _clientAppIv, ref _writeSeq, 23, data);
             return EncryptRecordInternalWithKey(_clientAppCryptoKey, _clientAppIv, ref _writeSeq, 23, data);
         }
 
@@ -1132,7 +1134,9 @@ namespace VlessVpnTask
             try
             {
                 byte[] nonce = BuildNonce(_serverAppIv, _readSeq++);
-                byte[] plain = Tls13Crypto.AesGcmDecryptWithKey(_serverAppCryptoKey, nonce, header, cipherAndTag);
+                byte[] plain = _chacha
+                    ? AwgCrypto.Open(_serverAppKey, nonce, header, cipherAndTag)
+                    : Tls13Crypto.AesGcmDecryptWithKey(_serverAppCryptoKey, nonce, header, cipherAndTag);
                 if (plain != null && plain.Length > 0)
                 {
                     int end = plain.Length - 1;
@@ -1169,7 +1173,9 @@ namespace VlessVpnTask
             if (application)
             {
                 byte[] nonce = BuildNonce(_serverAppIv, _readSeq++);
-                byte[] plain = Tls13Crypto.AesGcmDecryptWithKey(_serverAppCryptoKey, nonce, rec.Item2, rec.Item3);
+                byte[] plain = _chacha
+                    ? AwgCrypto.Open(_serverAppKey, nonce, rec.Item2, rec.Item3)
+                    : Tls13Crypto.AesGcmDecryptWithKey(_serverAppCryptoKey, nonce, rec.Item2, rec.Item3);
                 if (plain == null) return null;
                 int end = plain.Length - 1;
                 while (end >= 0 && plain[end] == 0) end--;
@@ -1181,7 +1187,9 @@ namespace VlessVpnTask
                 byte[] key = _serverHandshakeKey;
                 byte[] iv = _serverHandshakeIv;
                 byte[] nonce = BuildNonce(iv, _readSeq++);
-                byte[] plain = Tls13Crypto.AesGcmDecrypt(key, nonce, rec.Item2, rec.Item3);
+                byte[] plain = _chacha
+                    ? AwgCrypto.Open(key, nonce, rec.Item2, rec.Item3)
+                    : Tls13Crypto.AesGcmDecrypt(key, nonce, rec.Item2, rec.Item3);
                 if (plain == null) return null;
                 int end = plain.Length - 1;
                 while (end >= 0 && plain[end] == 0) end--;
@@ -1216,7 +1224,9 @@ namespace VlessVpnTask
             byte[] header = new byte[] { 23, 3, 3, (byte)(encLen >> 8), (byte)(encLen & 0xFF) };
             byte[] nonce = BuildNonce(iv, seq++);
 
-            byte[] encrypted = Tls13Crypto.AesGcmEncrypt(key, nonce, header, inner);
+            byte[] encrypted = _chacha
+                ? AwgCrypto.Seal(key, nonce, header, inner)
+                : Tls13Crypto.AesGcmEncrypt(key, nonce, header, inner);
 
             byte[] result = new byte[header.Length + encrypted.Length];
             System.Buffer.BlockCopy(header, 0, result, 0, header.Length);
@@ -1239,14 +1249,16 @@ namespace VlessVpnTask
             if (cipherOff + 3 > hs.Length) return null;
             int chosenCipher = (hs[cipherOff] << 8) | hs[cipherOff + 1];
             FileLog.Important($"[TLS 1.3] Сервер ответил ServerHello, выбранный шифр: 0x{chosenCipher:X4}.");
-            // 0x1301 = AES-128-GCM-SHA256, 0x1302 = AES-256-GCM-SHA384. ChaCha20 (0x1303)
-            // не реализован (в UWP нет провайдера, пришлось бы писать вручную).
-            if (chosenCipher == 0x1301) { _sha384 = false; _aesKeyLen = 16; }
-            else if (chosenCipher == 0x1302) { _sha384 = true; _aesKeyLen = 32; }
+            // 0x1301 = AES-128-GCM-SHA256, 0x1302 = AES-256-GCM-SHA384,
+            // 0x1303 = ChaCha20-Poly1305-SHA256. Провайдера ChaCha20 в UWP нет, поэтому
+            // берётся своя реализация из AwgCrypto — та же, что шифрует AmneziaWG.
+            if (chosenCipher == 0x1301) { _sha384 = false; _aesKeyLen = 16; _chacha = false; }
+            else if (chosenCipher == 0x1302) { _sha384 = true; _aesKeyLen = 32; _chacha = false; }
+            else if (chosenCipher == 0x1303) { _sha384 = false; _aesKeyLen = 32; _chacha = true; }
             else
             {
                 FileLog.Important($"[REALITY TLS 1.3 ERROR] Сервер выбрал шифр 0x{chosenCipher:X4}; " +
-                                  "клиент реализует 0x1301 и 0x1302. Handshake прерван.");
+                                  "клиент реализует 0x1301, 0x1302 и 0x1303. Handshake прерван.");
                 return null;
             }
             int pos = 39 + sidLen + 2 + 1; // пропустили cipher(2) + compression(1)

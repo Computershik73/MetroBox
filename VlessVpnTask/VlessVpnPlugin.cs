@@ -213,7 +213,9 @@ namespace VlessVpnTask
                 PhysicalAdapter = PhysicalIp.IPInformation.NetworkAdapter;
             }
 
-            FileLog.W($"[VPN PLUGIN] Обнаружен физический IP Wi-Fi/LTE: {PhysicalIp?.RawName}");
+            FileLog.W($"[VPN PLUGIN] Физический адрес для сокетов: {PhysicalIp?.RawName}"
+                      + $" (тип интерфейса {PhysicalAdapter?.IanaInterfaceType.ToString() ?? "?"})."
+                      + " На настольной машине важно, чтобы это был выход в интернет, а не виртуальный адаптер.");
 
             // Следим за сменой сети (Wi-Fi ↔ LTE). Без этого PhysicalIp определялся один раз
             // здесь и больше не обновлялся: после переключения все новые сокеты продолжали
@@ -896,22 +898,43 @@ namespace VlessVpnTask
         {
             try
             {
-                var hostNames = NetworkInformation.GetHostNames();
-                foreach (var hn in hostNames)
+                // Адаптер, через который система реально ходит в интернет. На телефоне это
+                // Wi-Fi или сотовая сеть и выбор очевиден, а на настольной машине рядом живут
+                // виртуальные адаптеры VirtualBox, VMware и Hyper-V. Раньше брался первый
+                // попавшийся адрес, и сокет, привязанный к 192.168.56.1 (VirtualBox), падал
+                // с ошибкой «сделана попытка выполнить операцию на сокете при отключённой сети».
+                Guid wanted = Guid.Empty;
+                try
                 {
-                    if (hn.Type == HostNameType.Ipv4 && hn.IPInformation?.NetworkAdapter != null)
-                    {
-                        string ip = hn.RawName;
-
-                        if (ip.StartsWith("11.16.") || ip.StartsWith("11.17."))
-                            continue;
-
-                        if (ip == "127.0.0.1" || ip.StartsWith("169.254."))
-                            continue;
-
-                        return hn;
-                    }
+                    var profile = NetworkInformation.GetInternetConnectionProfile();
+                    var adapter = profile?.NetworkAdapter;
+                    if (adapter != null) wanted = adapter.NetworkAdapterId;
                 }
+                catch { }
+
+                HostName fallback = null;
+                foreach (var hn in NetworkInformation.GetHostNames())
+                {
+                    if (hn.Type != HostNameType.Ipv4 || hn.IPInformation?.NetworkAdapter == null)
+                        continue;
+
+                    string ip = hn.RawName;
+
+                    if (ip.StartsWith("11.16.") || ip.StartsWith("11.17."))
+                        continue;
+
+                    if (ip == "127.0.0.1" || ip.StartsWith("169.254."))
+                        continue;
+
+                    if (wanted != Guid.Empty && hn.IPInformation.NetworkAdapter.NetworkAdapterId == wanted)
+                        return hn;
+
+                    if (fallback == null) fallback = hn;
+                }
+
+                // Профиль интернета не определился (бывает в момент смены сети) — ведём себя
+                // как раньше и берём первый подходящий адрес.
+                return fallback;
             }
             catch { }
             return null;

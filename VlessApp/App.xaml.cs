@@ -24,6 +24,31 @@ namespace VlessApp
         {
             this.InitializeComponent();
             this.Suspending += OnSuspending;
+
+            // Падение приложения иначе видно только в системном журнале ошибок, и то
+            // одним кодом 0x80131500 без текста. Записываем исключение к себе, чтобы
+            // пользователь мог прислать его вместе с остальным журналом.
+            this.UnhandledException += (s, e) =>
+            {
+                try
+                {
+                    AppLog.W("──── НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ ────");
+                    AppLog.W("  " + e.Message);
+                    AppLog.W("  " + (e.Exception == null ? "<нет объекта исключения>" : e.Exception.ToString()));
+                }
+                catch { }
+            };
+
+            TaskScheduler.UnobservedTaskException += (s, e) =>
+            {
+                try
+                {
+                    AppLog.W("──── ИСКЛЮЧЕНИЕ В ФОНОВОЙ ЗАДАЧЕ ────");
+                    AppLog.W("  " + e.Exception);
+                }
+                catch { }
+                e.SetObserved();
+            };
         }
 
         protected override void OnLaunched(LaunchActivatedEventArgs e)
