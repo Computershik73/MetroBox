@@ -224,7 +224,7 @@ namespace VlessApp
             }
         }
 
-        private bool IsVpnProfileConnectedByIana()
+        private static bool IsVpnProfileConnectedByIana()
         {
             try
             {
@@ -250,7 +250,7 @@ namespace VlessApp
             return false;
         }
 
-        private bool IsVpnInterfaceActive()
+        private static bool IsVpnInterfaceActive()
         {
             try
             {
@@ -275,6 +275,35 @@ namespace VlessApp
             return false;
         }
 
+        // Состояние туннеля глазами системы. Порядок доверия важен: сначала спрашиваем
+        // сам профиль, и только если он не отвечает — смотрим на след, оставленный
+        // плагином. Раньше исключение при опросе считалось подтверждением подключения,
+        // и приложение застревало в состоянии «подключён» после отключения VPN из
+        // настроек системы: адрес туннеля у машины ещё оставался, профиль уже не
+        // отвечал, а приложение делало из этого вывод «работает».
+        private static VpnManagementConnectionStatus ReadVpnState(VpnPlugInProfile plug)
+        {
+            bool traceOfTunnel;
+            try { traceOfTunnel = IsVpnInterfaceActive() || IsVpnProfileConnectedByIana(); }
+            catch { traceOfTunnel = false; }
+
+            if (!traceOfTunnel) return VpnManagementConnectionStatus.Disconnected;
+
+            try { return plug.ConnectionStatus; }
+            catch { }
+
+            bool pluginSaysUp = false;
+            try
+            {
+                pluginSaysUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+            }
+            catch { }
+
+            return pluginSaysUp
+                ? VpnManagementConnectionStatus.Connected
+                : VpnManagementConnectionStatus.Disconnected;
+        }
+
         private async Task CheckVpnStatusAsync()
         {
             try
@@ -282,30 +311,15 @@ namespace VlessApp
                 var mine = await GetProfileAsync();
                 if (mine != null && mine is VpnPlugInProfile plug)
                 {
-                    // Проверяем активность системных сетевых IANA-интерфейсов ядра (без генерации исключений)
-                    bool isVpnActive = IsVpnInterfaceActive() || IsVpnProfileConnectedByIana();
-                    VpnManagementConnectionStatus status = VpnManagementConnectionStatus.Disconnected;
+                    // Всё это — синхронные вызовы системы, и каждый из них умеет задуматься
+                    // на секунды, пока служба VPN занята разрывом. На потоке интерфейса это
+                    // выглядело как намертво зависшее приложение, поэтому спрашиваем в фоне
+                    // и со сроком: не ответили — оставляем прежнее состояние до следующего
+                    // тика, окно при этом живое.
+                    var ask = Task.Run(() => ReadVpnState(plug));
+                    if (await Task.WhenAny(ask, Task.Delay(3000)) != ask) return;
 
-                    if (isVpnActive)
-                    {
-                        // Если туннель уже поднят, пробуем запросить точный статус.
-                        // Если системный API выбросит исключение (из-за инициализации плагина) — 
-                        // мы все равно знаем, что туннель работает, поэтому ставим Connected.
-                        try
-                        {
-                            status = plug.ConnectionStatus;
-                        }
-                        catch (Exception)
-                        {
-                            status = VpnManagementConnectionStatus.Connected;
-                        }
-                    }
-                    else
-                    {
-                        // Если в системе нет активных VPN-интерфейсов, мы гарантированно отключены.
-                        // Избегаем вызова plug.ConnectionStatus, предотвращая тормоза интерфейса и спам в логи.
-                        status = VpnManagementConnectionStatus.Disconnected;
-                    }
+                    VpnManagementConnectionStatus status = ask.Result;
 
                     RefreshTransportWarning(status == VpnManagementConnectionStatus.Connected);
 
@@ -458,10 +472,43 @@ namespace VlessApp
         {
             if (_isConnected)
             {
+                // Кнопку приходилось жать помногу раз: приложение просило систему
+                // отключиться и, не дожидаясь ответа, закрывалось. Если система просьбу не
+                // выполнила, при следующем запуске всё выглядело по-прежнему подключённым,
+                // и нажатие как будто не срабатывало. Теперь ждём, пока туннель отпустит,
+                // и говорим вслух, если он не отпустил.
+                ConnectBtn.IsEnabled = false;
                 StatusText.Text = "Отключение...";
-                await ForceDisconnectActiveProfileAsync();
-                await Task.Delay(700);
-                HardResetMainPage();
+                AppLog.Section("ОТКЛЮЧЕНИЕ");
+                try
+                {
+                    await ForceDisconnectActiveProfileAsync();
+
+                    var mine = await GetProfileAsync() as VpnPlugInProfile;
+                    bool released = mine == null;
+                    for (int i = 0; !released && i < 16; i++)
+                    {
+                        await Task.Delay(500);
+                        var ask = Task.Run(() => ReadVpnState(mine));
+                        if (await Task.WhenAny(ask, Task.Delay(2000)) != ask) continue;
+                        released = ask.Result != VpnManagementConnectionStatus.Connected;
+                        StatusText.Text = $"Отключение... ({(i + 1) / 2 + 1} с)";
+                    }
+
+                    if (released)
+                    {
+                        AppLog.W("  туннель отпущен, закрываю приложение");
+                        HardResetMainPage();
+                        return;
+                    }
+
+                    AppLog.W("  система за 8 секунд туннель не отпустила");
+                    StatusText.Text = "Система не отпускает туннель. Отключите VPN в настройках системы.";
+                }
+                finally
+                {
+                    ConnectBtn.IsEnabled = true;
+                }
             }
             else
             {
@@ -596,12 +643,15 @@ namespace VlessApp
                     try
                     {
                         var status = await agent.DisconnectProfileAsync(p);
-                        System.Diagnostics.Debug.WriteLine($"[VPN MGR] DisconnectProfile '{p.ProfileName}': {status}");
+
+                        // Ответ системы раньше уходил в отладочный вывод, которого на
+                        // телефоне нет. Без него «кнопка не работает» было нечем объяснить.
+                        AppLog.W($"  отключение профиля '{p.ProfileName}': {status}");
                         any = true;
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[VPN MGR] Не удалось отключить '{p.ProfileName}': {ex.Message}");
+                        AppLog.W($"  отключить профиль '{p.ProfileName}' не вышло: {ex.Message}");
                     }
                 }
                 return any;

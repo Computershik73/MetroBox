@@ -204,6 +204,7 @@ namespace VlessVpnTask
             PhysicalIp = null;
             _disconnected = false;
             IsConnected = false;
+            SetTunnelUp(false);
 
             // Повторный Connect() без Disconnect() оставлял движок прошлой сессии жить:
             // его таймеры продолжали тикать (в журнале строки [POOL] шли парами), соединения
@@ -522,6 +523,7 @@ namespace VlessVpnTask
 
                 FileLog.W("[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ!");
                 IsConnected = true;
+                SetTunnelUp(true);
                 StartWatchdog();
                 PublishTile();
             }
@@ -541,6 +543,7 @@ namespace VlessVpnTask
         {
             if (_disconnected) { try { channel?.Stop(); } catch { } return; }
             _disconnected = true;
+            SetTunnelUp(false);
 
             FileLog.Important("[VPN PLUGIN] Disconnect: освобождаю ресурсы...");
             try { LiveTile.ShowDisconnected(); } catch { }
@@ -779,6 +782,7 @@ namespace VlessVpnTask
                 _awgConfig.Mtu, (uint)_awgConfig.Mtu, false, _dummyTransport);
 
             IsConnected = true;
+            SetTunnelUp(true);
             PublishTile();
             FileLog.Important($"[AWG] TUN поднят: адрес {tunIp}, MTU {_awgConfig.Mtu}, DNS {string.Join(",", _awgConfig.Dns)}");
         }
@@ -804,6 +808,17 @@ namespace VlessVpnTask
                 LiveTile.ShowConnected(name, details);
             }
             catch (Exception ex) { FileLog.W($"[TILE] {ex.Message}"); }
+        }
+
+        // Приложение живёт в другом процессе и о состоянии туннеля судило по наличию
+        // адреса 11.16.1.1 у машины. Адрес этот после отключения исчезает не сразу, и
+        // приложение продолжало считать себя подключённым — кнопка отключения нажималась
+        // впустую. Здесь плагин прямо говорит, поднят туннель или нет.
+        private const string TunnelUpKey = "v_TunnelUp";
+
+        private static void SetTunnelUp(bool up)
+        {
+            try { ApplicationData.Current.LocalSettings.Values[TunnelUpKey] = up; } catch { }
         }
 
         private const string LastServerIpKey = "v_LastServerIp";
