@@ -1911,23 +1911,13 @@ namespace VlessApp
             UpdateHideAllButtonVisibility();
         }
 
-        // profiles.json на телефоне оказался недоступен самому приложению: и чтение, и
-        // запись возвращали «Access is denied», хотя файл целый и с компьютера читается.
-        // Так выглядит файл, попавший в папку приложения мимо него самого — например,
-        // положенный через USB: права на нём чужие, и песочница в него не пускает.
-        // Удалить его и создать заново тоже не вышло, поэтому спорить с ним бессмысленно:
-        // список переехал в собственный файл приложения, а прежние читаются только как
-        // источник для переноса. Пока новый файл на месте, старые не смотрим — иначе
-        // удалённые подписки воскресали бы на каждом запуске, что и происходило.
-        private const string ProfilesFile = "profiles.v2.json";
-        private const string ProfilesBackupFile = "profiles.v2.bak";
-
-        // Файлы прежних версий, в порядке свежести: основной, копия, остаток
-        // незавершённой записи.
-        private static readonly string[] LegacyProfileFiles = { "profiles.json", "profiles.bak", "profiles.tmp" };
+        // Список живёт в одном файле. Пишется он через FileIO: поток, который выдаёт
+        // OpenStreamForWriteAsync, дописывает файл уже после Dispose, и если телефон
+        // усыплял приложение сразу после импорта, запись не доходила — подписка была в
+        // списке до перезапуска и пропадала после него.
+        private const string ProfilesFile = "profiles.json";
 
         private readonly System.Threading.SemaphoreSlim _saveLock = new System.Threading.SemaphoreSlim(1, 1);
-        private bool _legacyCleaned;
 
         private static string SerializeProfiles(List<VlessProfile> profiles)
         {
@@ -1946,14 +1936,6 @@ namespace VlessApp
                 string json = SerializeProfiles(_allProfiles);
                 var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
 
-                // Копия прежнего состояния: если запись оборвётся, список будет откуда взять.
-                try
-                {
-                    var previous = await folder.GetFileAsync(ProfilesFile);
-                    await previous.CopyAsync(folder, ProfilesBackupFile, Windows.Storage.NameCollisionOption.ReplaceExisting);
-                }
-                catch { /* при первом сохранении копировать ещё нечего */ }
-
                 var file = await folder.CreateFileAsync(ProfilesFile, Windows.Storage.CreationCollisionOption.ReplaceExisting);
                 await Windows.Storage.FileIO.WriteTextAsync(file, json);
 
@@ -1961,20 +1943,6 @@ namespace VlessApp
                 // пустой список после перезапуска, и в журнале это выглядело как успех.
                 ulong written = (await file.GetBasicPropertiesAsync()).Size;
                 AppLog.W($"[ПРОФИЛИ] Сохранено: {_allProfiles.Count} шт., на диске {written} байт.");
-
-                // Файлы прежних версий больше не нужны и не должны попасться при загрузке.
-                // Хватает одной попытки за запуск: неподатливый файл иначе писал бы в
-                // журнал строку на каждое сохранение.
-                foreach (var legacy in _legacyCleaned ? new string[0] : LegacyProfileFiles)
-                {
-                    try { await (await folder.GetFileAsync(legacy)).DeleteAsync(Windows.Storage.StorageDeleteOption.PermanentDelete); }
-                    catch (Exception ex)
-                    {
-                        if (ex is FileNotFoundException) continue;
-                        AppLog.W($"[ПРОФИЛИ] {legacy} остался лежать ({ex.Message}), но читать его больше не будут.");
-                    }
-                }
-                _legacyCleaned = true;
             }
             catch (Exception ex)
             {
@@ -1986,8 +1954,7 @@ namespace VlessApp
             }
         }
 
-        // Возвращает null, если файла нет или он не читается: разница между
-        // «пусто» и «не прочитали» решает, брать ли резервную копию.
+        // Возвращает null, если файла нет или он не читается.
         private static async Task<List<VlessProfile>> TryReadProfilesFileAsync(string name)
         {
             try
@@ -2016,34 +1983,6 @@ namespace VlessApp
             try
             {
                 var list = await TryReadProfilesFileAsync(ProfilesFile);
-                bool rescued = false;
-
-                // Свой файл не прочитался — берём копию прошлого состояния.
-                if (list == null)
-                {
-                    list = await TryReadProfilesFileAsync(ProfilesBackupFile);
-                    if (list != null)
-                    {
-                        rescued = true;
-                        AppLog.W($"[ПРОФИЛИ] Основной файл не прочитан, взята резервная копия: {list.Count} шт.");
-                    }
-                }
-
-                // Ни того, ни другого нет — значит, это первый запуск после обновления:
-                // переносим список из файлов прежних версий. Если своего файла нет именно
-                // потому, что пользователь удалил все подписки, переносить будет нечего —
-                // пустой список тоже сохраняется и читается как пустой.
-                if (list == null)
-                {
-                    foreach (var legacy in LegacyProfileFiles)
-                    {
-                        list = await TryReadProfilesFileAsync(legacy);
-                        if (list == null) continue;
-                        rescued = true;
-                        AppLog.W($"[ПРОФИЛИ] Перенос из {legacy}: {list.Count} шт.");
-                        break;
-                    }
-                }
 
                 {
                     _allProfiles.Clear();
@@ -2052,10 +1991,6 @@ namespace VlessApp
                         _allProfiles.AddRange(list);
                     }
                     AppLog.W($"[ПРОФИЛИ] Загружено при старте: {_allProfiles.Count} шт.");
-
-                    // Список поднят из запасного файла — возвращаем его в основной сразу,
-                    // иначе следующий запуск снова будет спасать его тем же путём.
-                    if (rescued && _allProfiles.Count > 0) await SaveProfilesAsync();
 
                     // REALITY без SNI не поднимется никогда: сервер не отвечает на
                     // такой ClientHello. Конфиги, сохранённые до исправления разбора,
