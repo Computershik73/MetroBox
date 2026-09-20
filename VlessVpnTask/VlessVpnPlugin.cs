@@ -223,6 +223,11 @@ namespace VlessVpnTask
                 FileLog.Important("[VPN PLUGIN] Найден туннель AmneziaWG прошлой сессии — останавливаю его.");
                 try { staleAwg.SignalStop(); } catch { }
             }
+
+            // Система сама переподключает туннель, не вызывая Disconnect: в журнале
+            // Connect() приходит посреди работающего соединения. Отличать такой вызов
+            // от холодного старта важно — при нём DNS спрашивать бесполезно.
+            bool restartOverLiveTun = staleNat != null || staleAwg != null;
             try { H2MuxRegistry.Reset(); } catch { }
 
             _channel = channel;
@@ -308,27 +313,53 @@ namespace VlessVpnTask
                 // нашего же FakeDns внутри туннеля, который вернёт фиктивный 11.17.x.x, и
                 // туннель начнёт ломиться сам в себя (в логе: таймауты подключения к туннелю
                 // вперемешку с DNS-запросами имени сервера).
-                ServerIp = ResolveServerIpAsync(_config.Address, 3, 2000).GetAwaiter().GetResult();
-                if (!string.IsNullOrEmpty(ServerIp))
+                // При переподключении поверх поднятого TUN обычный DNS уходит в туннель,
+                // который мы только что погасили: три попытки просто съедали восемь секунд,
+                // и всё это время связи не было. Адрес сервера от сети не зависит, поэтому
+                // берём последний известный и идём дальше.
+                string knownIp = null, knownFor = null;
+                try
                 {
-                    FileLog.Important($"[VPN PLUGIN] Успешно разрешен IP: {ServerIp}");
-                    try { localSettings.Values[LastServerIpKey] = ServerIp; } catch { }
+                    knownIp = localSettings.Values[LastServerIpKey] as string;
+                    knownFor = localSettings.Values[LastServerHostKey] as string;
+                }
+                catch { }
+
+                if (restartOverLiveTun && !string.IsNullOrEmpty(knownIp) && !IsTunnelFakeIp(knownIp) &&
+                    string.Equals(knownFor, _config.Address, StringComparison.OrdinalIgnoreCase))
+                {
+                    ServerIp = knownIp;
+                    FileLog.Important($"[VPN PLUGIN] Переподключение поверх живого TUN — беру известный IP сервера: {ServerIp} (DNS сейчас всё равно уходит в туннель).");
                 }
                 else
                 {
-                    // Подстраховка: берём последний удачно разрешённый адрес. IP сервера от
-                    // нашей сети не зависит, поэтому кэш почти всегда актуален и вытаскивает
-                    // подключение там, где DNS ещё не проснулся.
-                    string cachedIp = null;
-                    try { cachedIp = localSettings.Values[LastServerIpKey] as string; } catch { }
-                    if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp))
+                    ServerIp = ResolveServerIpAsync(_config.Address, 3, 2000).GetAwaiter().GetResult();
+                    if (!string.IsNullOrEmpty(ServerIp))
                     {
-                        ServerIp = cachedIp;
-                        FileLog.Important($"[VPN PLUGIN] DNS не ответил — беру последний известный IP сервера: {ServerIp}");
+                        FileLog.Important($"[VPN PLUGIN] Успешно разрешен IP: {ServerIp}");
+                        try
+                        {
+                            localSettings.Values[LastServerIpKey] = ServerIp;
+                            localSettings.Values[LastServerHostKey] = _config.Address;
+                        }
+                        catch { }
                     }
                     else
                     {
-                        FileLog.Important("[VPN PLUGIN] ВНИМАНИЕ: IP сервера не разрешён и кэша нет — подключение может не подняться.");
+                        // Подстраховка: берём последний удачно разрешённый адрес. IP сервера от
+                        // нашей сети не зависит, поэтому кэш почти всегда актуален и вытаскивает
+                        // подключение там, где DNS ещё не проснулся.
+                        string cachedIp = null;
+                        try { cachedIp = localSettings.Values[LastServerIpKey] as string; } catch { }
+                        if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp))
+                        {
+                            ServerIp = cachedIp;
+                            FileLog.Important($"[VPN PLUGIN] DNS не ответил — беру последний известный IP сервера: {ServerIp}");
+                        }
+                        else
+                        {
+                            FileLog.Important("[VPN PLUGIN] ВНИМАНИЕ: IP сервера не разрешён и кэша нет — подключение может не подняться.");
+                        }
                     }
                 }
 
@@ -776,6 +807,10 @@ namespace VlessVpnTask
         }
 
         private const string LastServerIpKey = "v_LastServerIp";
+
+        // Имя, которому принадлежит запомненный адрес: сервер могли сменить, и тогда
+        // кэш чужой.
+        private const string LastServerHostKey = "v_LastServerIpFor";
 
         // 11.16.x.x — адрес самого TUN, 11.17.x.x — пул FakeDns. Если DNS вернул такое,
         // значит запрос ушёл в наш собственный туннель: брать этот адрес нельзя.
