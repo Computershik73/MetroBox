@@ -1911,42 +1911,72 @@ namespace VlessApp
             UpdateHideAllButtonVisibility();
         }
 
-        // Сохранение шло прямо в profiles.json и без ожидания сброса на диск. Поток,
-        // выданный OpenStreamForWriteAsync, дописывает файл сам по себе уже после Dispose,
-        // и если телефон усыплял или закрывал приложение сразу после импорта (а после
-        // съёмки QR-кода это обычное дело — камера уводит приложение в фон), запись не
-        // доходила: подписка была в списке до перезапуска и пропадала после него. Плюс
-        // два сохранения подряд писали в один и тот же файл одновременно.
+        // На телефоне profiles.json оказался недоступен самому приложению: и чтение, и
+        // запись возвращали «Access is denied», хотя файл целый и с компьютера читается.
+        // Такое бывает с файлом, который попал в папку приложения мимо него самого —
+        // например, положен через USB. Приложение при этом работало как будто всё в
+        // порядке: импорт ложился в список, сохранение молча падало, и после перезапуска
+        // список оказывался пустым.
         //
-        // Теперь запись идёт во временный файл с явным сбросом на диск, прежний файл
-        // уходит в profiles.bak, и только потом временный занимает его место. Файл на
-        // диске в любой момент либо старый целиком, либо новый целиком.
+        // Отсюда правила: писать через FileIO (он сам дописывает файл до конца, в отличие
+        // от потока OpenStreamForWriteAsync), держать рядом прошлое состояние в
+        // profiles.bak, а если файл не поддаётся — удалить его и создать заново. Удаление
+        // разрешено правами на саму папку, поэтому проходит и там, где запись в файл нет.
         private readonly System.Threading.SemaphoreSlim _saveLock = new System.Threading.SemaphoreSlim(1, 1);
+
+        private static string SerializeProfiles(List<VlessProfile> profiles)
+        {
+            using (var ms = new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(List<VlessProfile>)).WriteObject(ms, profiles);
+                return Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
+            }
+        }
+
+        private static async Task WriteProfilesFileAsync(Windows.Storage.StorageFolder folder, string json)
+        {
+            var file = await folder.CreateFileAsync("profiles.json", Windows.Storage.CreationCollisionOption.ReplaceExisting);
+            await Windows.Storage.FileIO.WriteTextAsync(file, json);
+        }
 
         private async Task SaveProfilesAsync()
         {
             await _saveLock.WaitAsync();
             try
             {
+                string json = SerializeProfiles(_allProfiles);
                 var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
 
-                var tmp = await folder.CreateFileAsync("profiles.tmp", Windows.Storage.CreationCollisionOption.ReplaceExisting);
-                using (var stream = await tmp.OpenStreamForWriteAsync())
-                {
-                    var serializer = new DataContractJsonSerializer(typeof(List<VlessProfile>));
-                    serializer.WriteObject(stream, _allProfiles);
-                    await stream.FlushAsync();
-                }
-
-                var target = await folder.CreateFileAsync("profiles.json", Windows.Storage.CreationCollisionOption.OpenIfExists);
+                // Копия прежнего состояния: если запись оборвётся, список будет откуда взять.
                 try
                 {
-                    var props = await target.GetBasicPropertiesAsync();
-                    if (props.Size > 0) await target.CopyAsync(folder, "profiles.bak", Windows.Storage.NameCollisionOption.ReplaceExisting);
+                    var previous = await folder.GetFileAsync("profiles.json");
+                    await previous.CopyAsync(folder, "profiles.bak", Windows.Storage.NameCollisionOption.ReplaceExisting);
                 }
-                catch { /* резервная копия — удобство, а не условие сохранения */ }
+                catch { /* первого файла может и не быть */ }
 
-                await tmp.MoveAndReplaceAsync(target);
+                try
+                {
+                    await WriteProfilesFileAsync(folder, json);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.W("[ПРОФИЛИ] Файл не поддался записи (" + ex.Message + ") — удаляю и создаю заново.");
+                    try
+                    {
+                        var bad = await folder.GetFileAsync("profiles.json");
+                        await bad.DeleteAsync(Windows.Storage.StorageDeleteOption.PermanentDelete);
+                    }
+                    catch (Exception delEx)
+                    {
+                        AppLog.W("[ПРОФИЛИ] Удалить тоже не вышло: " + delEx.Message);
+                    }
+                    await WriteProfilesFileAsync(folder, json);
+                }
+
+                // Остаток незавершённой записи прошлых версий: список уже сохранён, он не нужен.
+                try { await (await folder.GetFileAsync("profiles.tmp")).DeleteAsync(); } catch { }
+
                 AppLog.W($"[ПРОФИЛИ] Сохранено на диск: {_allProfiles.Count} шт.");
             }
             catch (Exception ex)
@@ -1966,10 +1996,15 @@ namespace VlessApp
             try
             {
                 var file = await Windows.Storage.ApplicationData.Current.LocalFolder.GetFileAsync(name);
-                using (var stream = await file.OpenStreamForReadAsync())
+
+                // Через FileIO, а не через поток: файл могли положить с меткой порядка
+                // байтов, и разборщик JSON споткнулся бы о неё на первом же символе.
+                string text = await Windows.Storage.FileIO.ReadTextAsync(file);
+                text = text.TrimStart('﻿');
+                using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(text)))
                 {
                     var serializer = new DataContractJsonSerializer(typeof(List<VlessProfile>));
-                    return (List<VlessProfile>)serializer.ReadObject(stream) ?? new List<VlessProfile>();
+                    return (List<VlessProfile>)serializer.ReadObject(ms) ?? new List<VlessProfile>();
                 }
             }
             catch (Exception ex)
@@ -1984,13 +2019,29 @@ namespace VlessApp
             try
             {
                 var list = await TryReadProfilesFileAsync("profiles.json");
+                bool rescued = false;
 
-                // Обрывок файла раньше означал потерю всего списка: разбор падал, и
-                // _allProfiles просто очищался. Теперь есть копия предыдущего состояния.
+                // Недоступный или рваный основной файл раньше означал потерю всего списка:
+                // разбор падал, и _allProfiles просто очищался. Теперь берём последнее, что
+                // есть: копию прошлого состояния, а следом — остаток незавершённой записи
+                // (в нём лежит самое свежее, что приложение успело собрать).
                 if (list == null)
                 {
                     list = await TryReadProfilesFileAsync("profiles.bak");
-                    if (list != null) AppLog.W($"[ПРОФИЛИ] Основной файл не прочитан, взята резервная копия: {list.Count} шт.");
+                    if (list != null)
+                    {
+                        rescued = true;
+                        AppLog.W($"[ПРОФИЛИ] Основной файл не прочитан, взята резервная копия: {list.Count} шт.");
+                    }
+                }
+                if (list == null)
+                {
+                    list = await TryReadProfilesFileAsync("profiles.tmp");
+                    if (list != null)
+                    {
+                        rescued = true;
+                        AppLog.W($"[ПРОФИЛИ] Взят остаток незавершённой записи: {list.Count} шт.");
+                    }
                 }
 
                 {
@@ -2000,6 +2051,10 @@ namespace VlessApp
                         _allProfiles.AddRange(list);
                     }
                     AppLog.W($"[ПРОФИЛИ] Загружено при старте: {_allProfiles.Count} шт.");
+
+                    // Список поднят из запасного файла — возвращаем его в основной сразу,
+                    // иначе следующий запуск снова будет спасать его тем же путём.
+                    if (rescued && _allProfiles.Count > 0) await SaveProfilesAsync();
 
                     // REALITY без SNI не поднимется никогда: сервер не отвечает на
                     // такой ClientHello. Конфиги, сохранённые до исправления разбора,
