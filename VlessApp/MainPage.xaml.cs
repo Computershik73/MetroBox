@@ -729,62 +729,71 @@ namespace VlessApp
         }
 
         // Многопроходное декодирование потока изображения в разных разрешениях
+        // Снимок с камеры телефона — это шестнадцать мегапикселей, и ZXing прогоняет
+        // по ним два бинаризатора. Раньше счёт шёл прямо в потоке интерфейса, да ещё
+        // начиная с полного разрешения: приложение замирало намертво, и со стороны это
+        // выглядело как зависание. Теперь счёт уходит в фоновый поток, а проходы идут
+        // от мелких размеров к крупным — код обычно читается уже на первом из них.
         private async Task<string> DecodeQrCodeFromStreamAsync(Windows.Storage.Streams.IRandomAccessStream stream)
         {
             try
             {
                 var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
-
-                // Проход 1: Пробуем оригинальный размер (подходит для высокой детализации)
-                using (var originalBmp = await decoder.GetSoftwareBitmapAsync(
-                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
-                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
-                    new Windows.Graphics.Imaging.BitmapTransform(),
-                    Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
-                    Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
-                {
-                    string res = DecodeWithBinarizers(originalBmp);
-                    if (!string.IsNullOrEmpty(res)) return res;
-                }
-
-                // Масштабируем до различных целевых размеров для подавления шумов и смазов
-                uint[] targets = new uint[] { 1200, 800, 600, 450 };
                 uint origWidth = decoder.PixelWidth;
                 uint origHeight = decoder.PixelHeight;
+                AppLog.W($"[QR] Снимок {origWidth}×{origHeight}, начинаю разбор.");
 
-                foreach (uint targetSize in targets)
+                foreach (uint targetSize in new uint[] { 600, 900, 1400, 0 })
                 {
-                    if (origWidth <= targetSize && origHeight <= targetSize) continue;
-
                     var transform = new Windows.Graphics.Imaging.BitmapTransform();
-                    float ratio = (float)origWidth / origHeight;
-                    if (origWidth > origHeight)
-                    {
-                        transform.ScaledWidth = targetSize;
-                        transform.ScaledHeight = (uint)(targetSize / ratio);
-                    }
-                    else
-                    {
-                        transform.ScaledHeight = targetSize;
-                        transform.ScaledWidth = (uint)(targetSize * ratio);
-                    }
-                    transform.InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Linear;
 
-                    using (var scaledBmp = await decoder.GetSoftwareBitmapAsync(
+                    // 0 — последний проход, по оригиналу: он самый дорогой, и нужен только
+                    // там, где мелкий код на крупном кадре после сжатия рассыпается.
+                    if (targetSize != 0)
+                    {
+                        if (origWidth <= targetSize && origHeight <= targetSize) continue;
+
+                        float ratio = (float)origWidth / origHeight;
+                        if (origWidth > origHeight)
+                        {
+                            transform.ScaledWidth = targetSize;
+                            transform.ScaledHeight = (uint)(targetSize / ratio);
+                        }
+                        else
+                        {
+                            transform.ScaledHeight = targetSize;
+                            transform.ScaledWidth = (uint)(targetSize * ratio);
+                        }
+                        transform.InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Linear;
+                    }
+
+                    StatusText.Text = targetSize != 0
+                        ? $"Распознавание ({targetSize} точек)..."
+                        : "Распознавание (полный размер)...";
+
+                    using (var bmp = await decoder.GetSoftwareBitmapAsync(
                         Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
                         Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
                         transform,
                         Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
                         Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
                     {
-                        string res = DecodeWithBinarizers(scaledBmp);
-                        if (!string.IsNullOrEmpty(res)) return res;
+                        // Именно этот счёт и держал интерфейс. Ожидание здесь возвращает
+                        // управление окну: полоса состояния обновляется, кнопки живые.
+                        string res = await Task.Run(() => DecodeWithBinarizers(bmp));
+                        if (!string.IsNullOrEmpty(res))
+                        {
+                            AppLog.W($"[QR] Код прочитан на проходе {(targetSize != 0 ? targetSize.ToString() : "оригинал")}, длина {res.Length}.");
+                            return res;
+                        }
                     }
                 }
+
+                AppLog.W("[QR] Код не прочитан ни на одном проходе.");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[QR STREAM DECODE ERROR] {ex.Message}");
+                AppLog.W("[QR] Ошибка разбора снимка: " + ex.Message);
             }
             return null;
         }

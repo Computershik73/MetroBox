@@ -778,6 +778,10 @@ namespace VlessApp
             using (var handler = new HttpClientHandler { AllowAutoRedirect = true })
             using (var client = new HttpClient(handler))
             {
+                // Без явного срока запрос висит сто секунд, и со стороны это ничем
+                // не отличается от зависшего приложения.
+                client.Timeout = TimeSpan.FromSeconds(25);
+
                 client.DefaultRequestHeaders.UserAgent.Clear();
                 client.DefaultRequestHeaders.UserAgent.TryParseAdd("Outline-Client/1.0");
                 var response = await client.GetAsync(httpUrl);
@@ -967,6 +971,10 @@ namespace VlessApp
 
                     using (var client = new HttpClient(handler))
                     {
+                        // Без явного срока запрос висит сто секунд, и со стороны это ничем
+                        // не отличается от зависшего приложения.
+                        client.Timeout = TimeSpan.FromSeconds(25);
+
                         var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
                         if (!localSettings.Values.ContainsKey("v_DeviceHwid"))
                         {
