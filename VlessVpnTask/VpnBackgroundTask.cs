@@ -101,19 +101,29 @@ namespace VlessVpnTask
             // 1) синхронно освобождаем ресурсы плагина (сокеты, движок, loopback)
             try { _plugin.Disconnect(null); } catch { }
 
-            // 2) завершаем deferral — штатный сигнал "задача закончена"
-            try { _deferral?.Complete(); } catch { }
-            _deferral = null;
-
-            // дать асинхронному логу дописать хвост и сокетам закрыться
-            try { System.Threading.Tasks.Task.Delay(1250).Wait(); } catch { }
-
-            try { Windows.ApplicationModel.Core.CoreApplication.Exit(); }
-            
-            catch (Exception ex)
+            // 2) выход уводим в сторону от потока, на котором система вызвала Disconnect:
+            //    пока мы на нём спим, платформа ждёт возврата из собственного вызова.
+            //
+            //    И deferral завершаем ПОСЛЕДНИМ. Complete() — это разрешение системе убить
+            //    процесс, а до него нужно успеть закрыть сокеты и дописать журнал. Прежний
+            //    порядок (сначала Complete, потом ожидание) процесс переживал не всегда: в
+            //    журнале телефона видно, как запись обрывается на середине Disconnect, и
+            //    следующее подключение падало с ошибкой 691 — ресурсы туннеля остались за
+            //    убитым процессом.
+            System.Threading.Tasks.Task.Run(async () =>
             {
-                try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
-            }
+                try { await System.Threading.Tasks.Task.Delay(1250); } catch { }
+                try { FileLog.Important("[BG TASK] TearDown: отпускаю задачу и выхожу."); } catch { }
+
+                try { _deferral?.Complete(); } catch { }
+                _deferral = null;
+
+                try { Windows.ApplicationModel.Core.CoreApplication.Exit(); }
+                catch (Exception ex)
+                {
+                    try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
+                }
+            });
         }
     }
 }
