@@ -205,6 +205,26 @@ namespace VlessVpnTask
             _disconnected = false;
             IsConnected = false;
 
+            // Повторный Connect() без Disconnect() оставлял движок прошлой сессии жить:
+            // его таймеры продолжали тикать (в журнале строки [POOL] шли парами), соединения
+            // висели на мёртвом канале, а брошенные задачи потом всплывали как непрочитанные
+            // ошибки. Гасим всё старое до создания нового.
+            var staleNat = _natEngine;
+            _natEngine = null;
+            if (staleNat != null)
+            {
+                FileLog.Important("[VPN PLUGIN] Найден движок прошлой сессии — останавливаю его.");
+                try { staleNat.SignalStop(); } catch { }
+            }
+            var staleAwg = _awgEngine;
+            _awgEngine = null;
+            if (staleAwg != null)
+            {
+                FileLog.Important("[VPN PLUGIN] Найден туннель AmneziaWG прошлой сессии — останавливаю его.");
+                try { staleAwg.SignalStop(); } catch { }
+            }
+            try { H2MuxRegistry.Reset(); } catch { }
+
             _channel = channel;
 
             PhysicalIp = GetPhysicalIpHostName();
@@ -471,6 +491,7 @@ namespace VlessVpnTask
 
                 FileLog.W("[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ!");
                 IsConnected = true;
+                StartWatchdog();
                 PublishTile();
             }
             catch (Exception ex)
@@ -500,6 +521,8 @@ namespace VlessVpnTask
                 try { NetworkInformation.NetworkStatusChanged -= OnNetworkStatusChanged; } catch { }
                 _netWatchActive = false;
             }
+
+            StopWatchdog();
 
             try { H2MuxRegistry.Reset(); } catch { }
             try { _awgEngine?.SignalStop(); } catch { }
@@ -803,6 +826,169 @@ namespace VlessVpnTask
         // Wi-Fi ↔ LTE система дёргает его несколько раз подряд, плюс отдельно — на подъём
         // нашего же TUN. Поэтому вся работа уходит в фон под флагом-защёлкой, а решение
         // принимается по ФАКТУ смены физического IP, а не по самому событию.
+        // ===================== сторож туннеля =====================
+        //
+        // Туннель умел умирать молча: процесс жив, таймеры тикают, а трафик не ходит —
+        // и так до тех пор, пока пользователь сам не переподключится. Причин две:
+        // событие смены сети приходит не всегда, а мёртвый общий H2-туннель никто не
+        // проверяет. Сторож раз в полторы минуты сверяет адрес интерфейса и раз в три
+        // минуты пропускает через сервер настоящий запрос.
+
+        private System.Threading.Timer _watchdog;
+        private int _watchdogBusy;
+        private int _probeFails;
+        private bool _probeLogged;
+
+        private const int WatchdogPeriodMs = 90 * 1000;
+        private const int ProbeBudgetMs = 8000;
+
+        // Проба стоит рукопожатия и пары килобайт, а на телефоне трафик считают.
+        // Адрес интерфейса смотрим каждый тик, туннель прощупываем раз в три минуты.
+        private const int ProbeMinIntervalMs = 3 * 60 * 1000;
+        private DateTime _lastProbeAt = DateTime.MinValue;
+
+        // Две цели: одна может быть закрыта у самого сервера, и тогда здоровый
+        // туннель выглядел бы мёртвым, а сторож рвал бы живые соединения.
+        private static readonly byte[][] ProbeTargets =
+        {
+            new byte[] { 1, 1, 1, 1 },
+            new byte[] { 8, 8, 8, 8 },
+        };
+
+        private void StartWatchdog()
+        {
+            StopWatchdog();
+            _probeFails = 0;
+            _probeLogged = false;
+            _lastProbeAt = DateTime.MinValue;   // новое подключение проверяем на первом же тике
+            try
+            {
+                _watchdog = new System.Threading.Timer(
+                    _ => { var ignore = WatchdogTickAsync(); }, null, WatchdogPeriodMs, WatchdogPeriodMs);
+            }
+            catch (Exception ex) { FileLog.Important($"[WATCHDOG] Не удалось завести таймер: {ex.Message}"); }
+        }
+
+        private void StopWatchdog()
+        {
+            var t = _watchdog;
+            _watchdog = null;
+            try { t?.Dispose(); } catch { }
+        }
+
+        private async Task WatchdogTickAsync()
+        {
+            if (_disconnected || !IsConnected) return;
+            if (System.Threading.Interlocked.Exchange(ref _watchdogBusy, 1) == 1) return;
+
+            try
+            {
+                // Адрес интерфейса мог смениться без события системы — проверка дешёвая,
+                // делаем её на каждом тике.
+                var fresh = GetPhysicalIpHostName();
+                string freshIp = fresh?.RawName;
+                string knownIp = PhysicalIp?.RawName;
+                if (freshIp != null && knownIp != null && !string.Equals(freshIp, knownIp, StringComparison.Ordinal))
+                {
+                    FileLog.Important($"[WATCHDOG] Адрес интерфейса сменился без события системы: {knownIp} → {freshIp}.");
+                    OnNetworkStatusChanged(null);   // тот же путь восстановления, что и у события
+                    return;
+                }
+
+                // AmneziaWG держит себя сам (keepalive + рехендшейк), пробовать нечего.
+                if (_config == null || _awgEngine != null) return;
+                if ((DateTime.UtcNow - _lastProbeAt).TotalMilliseconds < ProbeMinIntervalMs) return;
+                _lastProbeAt = DateTime.UtcNow;
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                bool alive = false;
+                foreach (var target in ProbeTargets)
+                {
+                    if (_disconnected) return;
+                    if (await ProbeTunnelAsync(target)) { alive = true; break; }
+                }
+                if (alive)
+                {
+                    // Первую удачную пробу записываем всегда: в присланном журнале должно
+                    // быть видно, что сторож работает, а туннель проверен на деле.
+                    if (_probeFails > 0) FileLog.Important($"[WATCHDOG] Туннель снова отвечает ({sw.ElapsedMilliseconds} мс).");
+                    else if (!_probeLogged) FileLog.Important($"[WATCHDOG] Туннель проверен: ответ через сервер за {sw.ElapsedMilliseconds} мс.");
+                    else FileLog.W($"[WATCHDOG] Туннель отвечает ({sw.ElapsedMilliseconds} мс).");
+                    _probeLogged = true;
+                    _probeFails = 0;
+                    return;
+                }
+
+                _probeFails++;
+                FileLog.Important($"[WATCHDOG] Проверка не прошла ({_probeFails} подряд): туннель не пропускает трафик.");
+
+                // Одна неудача бывает и на живом туннеле (сервер придушил соединение,
+                // сеть моргнула). Пересобираем на второй подряд.
+                if (_probeFails >= 2)
+                {
+                    FileLog.Important("[WATCHDOG] Пересоздаю соединения, не дожидаясь пользователя.");
+                    try { H2MuxRegistry.Reset(); } catch { }
+                    try { _natEngine?.ResetForNetworkChange(); } catch { }
+                    _probeFails = 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLog.Important($"[WATCHDOG] Ошибка проверки: {ex.Message}");
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref _watchdogBusy, 0);
+            }
+        }
+
+        /// Открывает через сервер поток к внешнему адресу и ждёт от него ответ.
+        /// Проверяется весь путь целиком, а не доступность узла: при нерабочем ключе
+        /// или мёртвом общем туннеле ответа не будет.
+        private async Task<bool> ProbeTunnelAsync(byte[] targetIp)
+        {
+            VlessConnection conn = null;
+            try
+            {
+                conn = new VlessConnection(_config, _channel);
+                conn.ConfigureDirectIp(targetIp, false, 80);
+
+                var start = conn.StartAsync();
+                if (await Task.WhenAny(start, Task.Delay(ProbeBudgetMs)) != start || !start.Result) return false;
+
+                byte[] req = System.Text.Encoding.ASCII.GetBytes(
+                    "HEAD / HTTP/1.1\r\nHost: " + string.Join(".", targetIp) + "\r\nConnection: close\r\n\r\n");
+                await conn.WriteUnderlyingAsync(req);
+
+                var deadline = DateTime.UtcNow.AddMilliseconds(ProbeBudgetMs);
+                var read = conn.ReadPayloadAsync();
+                while (!_disconnected)
+                {
+                    var left = deadline - DateTime.UtcNow;
+                    if (left <= TimeSpan.Zero) return false;
+
+                    // Одно чтение в работе за раз: брошенное чтение унесло бы с собой
+                    // уже полученный ответ и потом всплыло непрочитанной ошибкой.
+                    if (await Task.WhenAny(read, Task.Delay(left)) != read) return false;
+
+                    byte[] payload = read.Result;
+                    if (payload == null) return false;          // поток закрыт — ответа нет
+                    if (payload.Length > 0) return true;        // цель ответила: путь жив
+                    read = conn.ReadPayloadAsync();             // пустой блок — данных пока нет
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                FileLog.W($"[WATCHDOG] Проба оборвалась: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                try { conn?.Close(); } catch { }
+            }
+        }
+
         private void OnNetworkStatusChanged(object sender)
         {
             if (_disconnected) return;
