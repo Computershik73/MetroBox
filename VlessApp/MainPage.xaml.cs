@@ -1911,18 +1911,23 @@ namespace VlessApp
             UpdateHideAllButtonVisibility();
         }
 
-        // На телефоне profiles.json оказался недоступен самому приложению: и чтение, и
+        // profiles.json на телефоне оказался недоступен самому приложению: и чтение, и
         // запись возвращали «Access is denied», хотя файл целый и с компьютера читается.
-        // Такое бывает с файлом, который попал в папку приложения мимо него самого —
-        // например, положен через USB. Приложение при этом работало как будто всё в
-        // порядке: импорт ложился в список, сохранение молча падало, и после перезапуска
-        // список оказывался пустым.
-        //
-        // Отсюда правила: писать через FileIO (он сам дописывает файл до конца, в отличие
-        // от потока OpenStreamForWriteAsync), держать рядом прошлое состояние в
-        // profiles.bak, а если файл не поддаётся — удалить его и создать заново. Удаление
-        // разрешено правами на саму папку, поэтому проходит и там, где запись в файл нет.
+        // Так выглядит файл, попавший в папку приложения мимо него самого — например,
+        // положенный через USB: права на нём чужие, и песочница в него не пускает.
+        // Удалить его и создать заново тоже не вышло, поэтому спорить с ним бессмысленно:
+        // список переехал в собственный файл приложения, а прежние читаются только как
+        // источник для переноса. Пока новый файл на месте, старые не смотрим — иначе
+        // удалённые подписки воскресали бы на каждом запуске, что и происходило.
+        private const string ProfilesFile = "profiles.v2.json";
+        private const string ProfilesBackupFile = "profiles.v2.bak";
+
+        // Файлы прежних версий, в порядке свежести: основной, копия, остаток
+        // незавершённой записи.
+        private static readonly string[] LegacyProfileFiles = { "profiles.json", "profiles.bak", "profiles.tmp" };
+
         private readonly System.Threading.SemaphoreSlim _saveLock = new System.Threading.SemaphoreSlim(1, 1);
+        private bool _legacyCleaned;
 
         private static string SerializeProfiles(List<VlessProfile> profiles)
         {
@@ -1931,12 +1936,6 @@ namespace VlessApp
                 new DataContractJsonSerializer(typeof(List<VlessProfile>)).WriteObject(ms, profiles);
                 return Encoding.UTF8.GetString(ms.ToArray(), 0, (int)ms.Length);
             }
-        }
-
-        private static async Task WriteProfilesFileAsync(Windows.Storage.StorageFolder folder, string json)
-        {
-            var file = await folder.CreateFileAsync("profiles.json", Windows.Storage.CreationCollisionOption.ReplaceExisting);
-            await Windows.Storage.FileIO.WriteTextAsync(file, json);
         }
 
         private async Task SaveProfilesAsync()
@@ -1950,34 +1949,32 @@ namespace VlessApp
                 // Копия прежнего состояния: если запись оборвётся, список будет откуда взять.
                 try
                 {
-                    var previous = await folder.GetFileAsync("profiles.json");
-                    await previous.CopyAsync(folder, "profiles.bak", Windows.Storage.NameCollisionOption.ReplaceExisting);
+                    var previous = await folder.GetFileAsync(ProfilesFile);
+                    await previous.CopyAsync(folder, ProfilesBackupFile, Windows.Storage.NameCollisionOption.ReplaceExisting);
                 }
-                catch { /* первого файла может и не быть */ }
+                catch { /* при первом сохранении копировать ещё нечего */ }
 
-                try
+                var file = await folder.CreateFileAsync(ProfilesFile, Windows.Storage.CreationCollisionOption.ReplaceExisting);
+                await Windows.Storage.FileIO.WriteTextAsync(file, json);
+
+                // Записанное перечитывается: «сохранил» без проверки уже один раз означало
+                // пустой список после перезапуска, и в журнале это выглядело как успех.
+                ulong written = (await file.GetBasicPropertiesAsync()).Size;
+                AppLog.W($"[ПРОФИЛИ] Сохранено: {_allProfiles.Count} шт., на диске {written} байт.");
+
+                // Файлы прежних версий больше не нужны и не должны попасться при загрузке.
+                // Хватает одной попытки за запуск: неподатливый файл иначе писал бы в
+                // журнал строку на каждое сохранение.
+                foreach (var legacy in _legacyCleaned ? new string[0] : LegacyProfileFiles)
                 {
-                    await WriteProfilesFileAsync(folder, json);
-                }
-                catch (Exception ex)
-                {
-                    AppLog.W("[ПРОФИЛИ] Файл не поддался записи (" + ex.Message + ") — удаляю и создаю заново.");
-                    try
+                    try { await (await folder.GetFileAsync(legacy)).DeleteAsync(Windows.Storage.StorageDeleteOption.PermanentDelete); }
+                    catch (Exception ex)
                     {
-                        var bad = await folder.GetFileAsync("profiles.json");
-                        await bad.DeleteAsync(Windows.Storage.StorageDeleteOption.PermanentDelete);
+                        if (ex is FileNotFoundException) continue;
+                        AppLog.W($"[ПРОФИЛИ] {legacy} остался лежать ({ex.Message}), но читать его больше не будут.");
                     }
-                    catch (Exception delEx)
-                    {
-                        AppLog.W("[ПРОФИЛИ] Удалить тоже не вышло: " + delEx.Message);
-                    }
-                    await WriteProfilesFileAsync(folder, json);
                 }
-
-                // Остаток незавершённой записи прошлых версий: список уже сохранён, он не нужен.
-                try { await (await folder.GetFileAsync("profiles.tmp")).DeleteAsync(); } catch { }
-
-                AppLog.W($"[ПРОФИЛИ] Сохранено на диск: {_allProfiles.Count} шт.");
+                _legacyCleaned = true;
             }
             catch (Exception ex)
             {
@@ -2018,29 +2015,33 @@ namespace VlessApp
         {
             try
             {
-                var list = await TryReadProfilesFileAsync("profiles.json");
+                var list = await TryReadProfilesFileAsync(ProfilesFile);
                 bool rescued = false;
 
-                // Недоступный или рваный основной файл раньше означал потерю всего списка:
-                // разбор падал, и _allProfiles просто очищался. Теперь берём последнее, что
-                // есть: копию прошлого состояния, а следом — остаток незавершённой записи
-                // (в нём лежит самое свежее, что приложение успело собрать).
+                // Свой файл не прочитался — берём копию прошлого состояния.
                 if (list == null)
                 {
-                    list = await TryReadProfilesFileAsync("profiles.bak");
+                    list = await TryReadProfilesFileAsync(ProfilesBackupFile);
                     if (list != null)
                     {
                         rescued = true;
                         AppLog.W($"[ПРОФИЛИ] Основной файл не прочитан, взята резервная копия: {list.Count} шт.");
                     }
                 }
+
+                // Ни того, ни другого нет — значит, это первый запуск после обновления:
+                // переносим список из файлов прежних версий. Если своего файла нет именно
+                // потому, что пользователь удалил все подписки, переносить будет нечего —
+                // пустой список тоже сохраняется и читается как пустой.
                 if (list == null)
                 {
-                    list = await TryReadProfilesFileAsync("profiles.tmp");
-                    if (list != null)
+                    foreach (var legacy in LegacyProfileFiles)
                     {
+                        list = await TryReadProfilesFileAsync(legacy);
+                        if (list == null) continue;
                         rescued = true;
-                        AppLog.W($"[ПРОФИЛИ] Взят остаток незавершённой записи: {list.Count} шт.");
+                        AppLog.W($"[ПРОФИЛИ] Перенос из {legacy}: {list.Count} шт.");
+                        break;
                     }
                 }
 
