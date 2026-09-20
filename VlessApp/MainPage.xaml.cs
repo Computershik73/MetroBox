@@ -1946,7 +1946,11 @@ namespace VlessApp
                 var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
 
                 var file = await folder.CreateFileAsync(ProfilesFile, Windows.Storage.CreationCollisionOption.ReplaceExisting);
-                await Windows.Storage.FileIO.WriteTextAsync(file, json);
+
+                // Байтами, а не текстом: WriteTextAsync ставит в начало метку порядка
+                // байтов, а разборщик JSON о неё спотыкается — файл, записанный этой
+                // версией, не прочитала бы ни одна прежняя.
+                await Windows.Storage.FileIO.WriteBytesAsync(file, Encoding.UTF8.GetBytes(json));
 
                 // Записанное перечитывается: «сохранил» без проверки уже один раз означало
                 // пустой список после перезапуска, и в журнале это выглядело как успех.
