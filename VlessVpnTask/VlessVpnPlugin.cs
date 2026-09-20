@@ -885,7 +885,7 @@ namespace VlessVpnTask
             {
                 // Адрес интерфейса мог смениться без события системы — проверка дешёвая,
                 // делаем её на каждом тике.
-                var fresh = GetPhysicalIpHostName();
+                var fresh = GetPhysicalIpHostName(PhysicalIp);
                 string freshIp = fresh?.RawName;
                 string knownIp = PhysicalIp?.RawName;
                 if (freshIp != null && knownIp != null && !string.Equals(freshIp, knownIp, StringComparison.Ordinal))
@@ -1011,7 +1011,7 @@ namespace VlessVpnTask
             HostName fresh = null;
             for (int i = 0; i < 20 && !_disconnected; i++)
             {
-                fresh = GetPhysicalIpHostName();
+                fresh = GetPhysicalIpHostName(PhysicalIp);
                 if (fresh != null) break;
                 await Task.Delay(500);
             }
@@ -1082,6 +1082,19 @@ namespace VlessVpnTask
 
         public static HostName GetPhysicalIpHostName()
         {
+            return GetPhysicalIpHostName(null);
+        }
+
+        /// <param name="keepIfAlive">
+        /// Адрес, на котором мы уже работаем. Пока он есть у машины, менять его нельзя.
+        /// Когда TUN поднят, система начинает считать «выходом в интернет» другой
+        /// интерфейс: на телефоне при живом Wi-Fi профилем интернета становилась
+        /// сотовая сеть, плагин перепривязывал сокеты на её адрес, и после этого
+        /// ни одно соединение с сервером уже не открывалось. Смена адреса имеет
+        /// смысл только тогда, когда прежнего у машины больше нет.
+        /// </param>
+        public static HostName GetPhysicalIpHostName(HostName keepIfAlive)
+        {
             try
             {
                 // Адаптер, через который система реально ходит в интернет. На телефоне это
@@ -1098,6 +1111,9 @@ namespace VlessVpnTask
                 }
                 catch { }
 
+                string keepIp = keepIfAlive?.RawName;
+                HostName keepMatch = null;
+                HostName wantedMatch = null;
                 HostName fallback = null;
                 foreach (var hn in NetworkInformation.GetHostNames())
                 {
@@ -1112,11 +1128,19 @@ namespace VlessVpnTask
                     if (ip == "127.0.0.1" || ip.StartsWith("169.254."))
                         continue;
 
-                    if (wanted != Guid.Empty && hn.IPInformation.NetworkAdapter.NetworkAdapterId == wanted)
-                        return hn;
+                    if (keepIp != null && string.Equals(ip, keepIp, StringComparison.Ordinal))
+                        keepMatch = hn;
+
+                    if (wantedMatch == null && wanted != Guid.Empty &&
+                        hn.IPInformation.NetworkAdapter.NetworkAdapterId == wanted)
+                        wantedMatch = hn;
 
                     if (fallback == null) fallback = hn;
                 }
+
+                // Адрес, на котором уже идёт работа, важнее любых предпочтений системы.
+                if (keepMatch != null) return keepMatch;
+                if (wantedMatch != null) return wantedMatch;
 
                 // Профиль интернета не определился (бывает в момент смены сети) — ведём себя
                 // как раньше и берём первый подходящий адрес.

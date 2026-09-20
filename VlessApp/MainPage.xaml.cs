@@ -937,6 +937,8 @@ namespace VlessApp
 
                     UpdateGroupedUI();
                     await SaveProfilesAsync();
+                    AppLog.W($"[ИМПОРТ] Добавлено {newProfiles.Count} шт., групп: " +
+                             string.Join(", ", newProfiles.Select(p => p.SubscriptionGroup).Distinct()));
                     StatusText.Text = $"Импортировано {newProfiles.Count} серверов";
                     await ShowImportReportAsync(newProfiles.Count);
                 }
@@ -1909,20 +1911,71 @@ namespace VlessApp
             UpdateHideAllButtonVisibility();
         }
 
+        // Сохранение шло прямо в profiles.json и без ожидания сброса на диск. Поток,
+        // выданный OpenStreamForWriteAsync, дописывает файл сам по себе уже после Dispose,
+        // и если телефон усыплял или закрывал приложение сразу после импорта (а после
+        // съёмки QR-кода это обычное дело — камера уводит приложение в фон), запись не
+        // доходила: подписка была в списке до перезапуска и пропадала после него. Плюс
+        // два сохранения подряд писали в один и тот же файл одновременно.
+        //
+        // Теперь запись идёт во временный файл с явным сбросом на диск, прежний файл
+        // уходит в profiles.bak, и только потом временный занимает его место. Файл на
+        // диске в любой момент либо старый целиком, либо новый целиком.
+        private readonly System.Threading.SemaphoreSlim _saveLock = new System.Threading.SemaphoreSlim(1, 1);
+
         private async Task SaveProfilesAsync()
         {
+            await _saveLock.WaitAsync();
             try
             {
-                var file = await Windows.Storage.ApplicationData.Current.LocalFolder.CreateFileAsync("profiles.json", Windows.Storage.CreationCollisionOption.ReplaceExisting);
-                using (var stream = await file.OpenStreamForWriteAsync())
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+
+                var tmp = await folder.CreateFileAsync("profiles.tmp", Windows.Storage.CreationCollisionOption.ReplaceExisting);
+                using (var stream = await tmp.OpenStreamForWriteAsync())
                 {
                     var serializer = new DataContractJsonSerializer(typeof(List<VlessProfile>));
                     serializer.WriteObject(stream, _allProfiles);
+                    await stream.FlushAsync();
+                }
+
+                var target = await folder.CreateFileAsync("profiles.json", Windows.Storage.CreationCollisionOption.OpenIfExists);
+                try
+                {
+                    var props = await target.GetBasicPropertiesAsync();
+                    if (props.Size > 0) await target.CopyAsync(folder, "profiles.bak", Windows.Storage.NameCollisionOption.ReplaceExisting);
+                }
+                catch { /* резервная копия — удобство, а не условие сохранения */ }
+
+                await tmp.MoveAndReplaceAsync(target);
+                AppLog.W($"[ПРОФИЛИ] Сохранено на диск: {_allProfiles.Count} шт.");
+            }
+            catch (Exception ex)
+            {
+                AppLog.W("[ПРОФИЛИ] СОХРАНИТЬ НЕ УДАЛОСЬ: " + ex);
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+        }
+
+        // Возвращает null, если файла нет или он не читается: разница между
+        // «пусто» и «не прочитали» решает, брать ли резервную копию.
+        private static async Task<List<VlessProfile>> TryReadProfilesFileAsync(string name)
+        {
+            try
+            {
+                var file = await Windows.Storage.ApplicationData.Current.LocalFolder.GetFileAsync(name);
+                using (var stream = await file.OpenStreamForReadAsync())
+                {
+                    var serializer = new DataContractJsonSerializer(typeof(List<VlessProfile>));
+                    return (List<VlessProfile>)serializer.ReadObject(stream) ?? new List<VlessProfile>();
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[SAVE FAIL] {ex.Message}");
+                AppLog.W($"[ПРОФИЛИ] {name} не прочитан: {ex.Message}");
+                return null;
             }
         }
 
@@ -1930,16 +1983,23 @@ namespace VlessApp
         {
             try
             {
-                var file = await Windows.Storage.ApplicationData.Current.LocalFolder.GetFileAsync("profiles.json");
-                using (var stream = await file.OpenStreamForReadAsync())
+                var list = await TryReadProfilesFileAsync("profiles.json");
+
+                // Обрывок файла раньше означал потерю всего списка: разбор падал, и
+                // _allProfiles просто очищался. Теперь есть копия предыдущего состояния.
+                if (list == null)
                 {
-                    var serializer = new DataContractJsonSerializer(typeof(List<VlessProfile>));
-                    var list = (List<VlessProfile>)serializer.ReadObject(stream);
+                    list = await TryReadProfilesFileAsync("profiles.bak");
+                    if (list != null) AppLog.W($"[ПРОФИЛИ] Основной файл не прочитан, взята резервная копия: {list.Count} шт.");
+                }
+
+                {
                     _allProfiles.Clear();
                     if (list != null)
                     {
                         _allProfiles.AddRange(list);
                     }
+                    AppLog.W($"[ПРОФИЛИ] Загружено при старте: {_allProfiles.Count} шт.");
 
                     // REALITY без SNI не поднимется никогда: сервер не отвечает на
                     // такой ClientHello. Конфиги, сохранённые до исправления разбора,
@@ -1962,8 +2022,7 @@ namespace VlessApp
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[LOAD INFO] {ex.Message}");
-                _allProfiles.Clear();
+                AppLog.W("[ПРОФИЛИ] ЗАГРУЗКА СОРВАЛАСЬ: " + ex);
             }
 
             var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
