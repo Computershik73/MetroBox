@@ -358,9 +358,11 @@ namespace VlessApp
             string sec = (p.Security ?? "").Trim().ToLowerInvariant();
             string type = (p.Type ?? "tcp").Trim().ToLowerInvariant();
             bool ws = type == "ws" || type == "websocket";
+            bool xhttp = type == "xhttp" || type == "splithttp";
             if (sec == "reality") return null;
             if (sec == "tls")
-                return ws ? null : "обычный TLS реализован только для WebSocket, а здесь транспорт «" + type + "» — нужен REALITY";
+                return (ws || xhttp) ? null
+                    : "обычный TLS реализован для WebSocket и XHTTP, а здесь транспорт «" + type + "» — нужен REALITY";
             if (sec == "xtls")
                 return "XTLS (старый, до xtls-rprx-vision) не реализован";
             if (sec.Length == 0 || sec == "none")

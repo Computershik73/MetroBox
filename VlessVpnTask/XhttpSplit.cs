@@ -59,8 +59,11 @@ namespace VlessVpnTask
                 _reader = new DataReader(_socket.InputStream);
                 _reader.InputStreamOptions = InputStreamOptions.Partial;
 
-                // split всегда H1 -> просим ALPN только http/1.1
-                _reality = new RealityTls13Stream(_cfg) { OfferH1Only = true };
+                // split всегда H1 -> просим ALPN только http/1.1.
+                // security=tls — тот же наш TLS 1.3, только ClientHello без аутентификации
+                // REALITY и без ожидания подменного сертификата.
+                bool plainTls = string.Equals((_cfg.Security ?? "").Trim(), "tls", StringComparison.OrdinalIgnoreCase);
+                _reality = new RealityTls13Stream(_cfg) { OfferH1Only = true, PlainTls = plainTls };
                 var hs = _reality.EstablishHandshakeAsync(_writer, _reader);
                 if (await Task.WhenAny(hs, Task.Delay(timeoutMs)) != hs || !await hs)
                 { Close(); return false; }

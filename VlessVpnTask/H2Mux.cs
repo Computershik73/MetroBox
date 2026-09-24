@@ -176,7 +176,13 @@ namespace VlessVpnTask
         private async Task<bool> ConnectAndHandshakeAsync()
         {
             string targetHost = string.IsNullOrEmpty(VlessVpnPlugin.ServerIp) ? _cfg.Address : VlessVpnPlugin.ServerIp;
-            bool isReality = _cfg.Security.ToLower() == "reality";
+            string sec = (_cfg.Security ?? "").ToLower();
+            bool isReality = sec == "reality";
+
+            // Обычный TLS отличается от REALITY только содержимым ClientHello: ни
+            // аутентификации в session_id, ни разбора подменного сертификата. Всё
+            // остальное — тот же TLS 1.3 нашим стеком, поэтому и код тот же.
+            bool isTls = sec == "tls";
             const int maxAttempts = 3;
 
             for (int attempt = 1; ; attempt++)
@@ -217,22 +223,30 @@ namespace VlessVpnTask
                 reader.InputStreamOptions = InputStreamOptions.Partial;
                 var writer = new DataWriter(sock.OutputStream);
 
-                if (!isReality)
+                if (!isReality && !isTls)
                 {
                     _socket = sock; _reader = reader; _hsWriter = writer;
                     _outStream = sock.OutputStream.AsStreamForWrite(81920);
-                    FileLog.Important("[H2MUX] Туннель установлен (без reality).");
+                    FileLog.Important("[H2MUX] Туннель установлен (без шифрования).");
                     return true;
                 }
 
-                var rs = new RealityTls13Stream(_cfg);
+                var rs = new RealityTls13Stream(_cfg) { PlainTls = isTls };
                 var hs = rs.EstablishHandshakeAsync(writer, reader);
                 bool ok = await Task.WhenAny(hs, Task.Delay(8000)) == hs && await hs;
                 if (ok)
                 {
                     _socket = sock; _reader = reader; _hsWriter = writer; _reality = rs;
                     _outStream = sock.OutputStream.AsStreamForWrite(81920);
-                    FileLog.Important($"[H2MUX] Туннель установлен (Reality OK, попытка {attempt}).");
+                    FileLog.Important(isTls
+                        ? $"[H2MUX] Туннель установлен (TLS 1.3 OK, ALPN='{(string.IsNullOrEmpty(rs.NegotiatedAlpn) ? "<нет>" : rs.NegotiatedAlpn)}')."
+                        : $"[H2MUX] Туннель установлен (Reality OK, попытка {attempt}).");
+
+                    // Туннель говорит по HTTP/2. Если сервер выбрал http/1.1, дальше пойдут
+                    // кадры, которых он не ждёт, — без этой строки причина была бы не видна.
+                    if (isTls && !string.IsNullOrEmpty(rs.NegotiatedAlpn) &&
+                        !string.Equals(rs.NegotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
+                        FileLog.Important($"[H2MUX] ВНИМАНИЕ: сервер выбрал ALPN '{rs.NegotiatedAlpn}' вместо h2 — xhttp через общий туннель ему не подойдёт.");
                     return true;
                 }
 
@@ -245,9 +259,11 @@ namespace VlessVpnTask
                     FileLog.W($"[H2MUX] Reality fallback туннеля (попытка {attempt}) — быстрый повтор.");
                     continue;
                 }
-                FileLog.W(rs.ServerFellBack
-                    ? "[H2MUX] Reality fallback туннеля — исчерпаны попытки."
-                    : "[H2MUX] Reality handshake туннеля: таймаут/сбой.");
+                FileLog.W(isTls
+                    ? "[H2MUX] TLS-хендшейк туннеля: таймаут/сбой."
+                    : rs.ServerFellBack
+                        ? "[H2MUX] Reality fallback туннеля — исчерпаны попытки."
+                        : "[H2MUX] Reality handshake туннеля: таймаут/сбой.");
                 return false;
             }
         }

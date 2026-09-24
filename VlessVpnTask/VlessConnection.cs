@@ -1583,6 +1583,13 @@ namespace VlessVpnTask
 
                 bool isReality = _cfg.Security.ToLower() == "reality";
 
+                // security=tls поднимается тем же нашим стеком TLS 1.3: от REALITY он
+                // отличается только ClientHello — без аутентификации в session_id и без
+                // ожидания подменного сертификата. Системный TLS тут не годится: schannel
+                // на телефоне идёт в сеть за проверкой цепочки, а сеть в этот момент уже
+                // заведена в туннель, которого ещё нет.
+                bool isPlainTls = _cfg.Security.ToLower() == "tls";
+
                 // Reality-сервер под нагрузкой изредка «роняет» нас на прикрытие (amd.com)
                 // вместо аутентификации. Раньше это обнаруживалось поздно (на статусе H2),
                 // и всё соединение пересоздавалось приложением заново (новый SYN + новый
@@ -1673,10 +1680,10 @@ namespace VlessVpnTask
                     _reader = new DataReader(Socket.InputStream);
                     _reader.InputStreamOptions = InputStreamOptions.Partial;
 
-                    if (!isReality)
-                        break; // без reality ретраить нечего
+                    if (!isReality && !isPlainTls)
+                        break; // без шифрующего слоя ретраить нечего
 
-                    _realityStream = new RealityTls13Stream(_cfg);
+                    _realityStream = new RealityTls13Stream(_cfg) { PlainTls = isPlainTls };
 
                     // Ждём очередь ДО запуска таймера: иначе соединение, простоявшее
                     // в очереди, отвалилось бы по таймауту, ни разу не выйдя в сеть.
