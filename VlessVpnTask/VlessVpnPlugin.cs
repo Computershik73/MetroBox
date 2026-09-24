@@ -202,6 +202,7 @@ namespace VlessVpnTask
             ServerIp = null;
             PhysicalAdapter = null;
             PhysicalIp = null;
+            System.Threading.Interlocked.Increment(ref ConnectGeneration);
             _disconnected = false;
             IsConnected = false;
             SetTunnelUp(false);
@@ -525,6 +526,7 @@ namespace VlessVpnTask
                 IsConnected = true;
                 SetTunnelUp(true);
                 StartWatchdog();
+                StartAppWatch();
                 PublishTile();
             }
             catch (Exception ex)
@@ -557,6 +559,7 @@ namespace VlessVpnTask
             }
 
             StopWatchdog();
+            StopAppWatch();
 
             try { H2MuxRegistry.Reset(); } catch { }
             try { _awgEngine?.SignalStop(); } catch { }
@@ -783,6 +786,7 @@ namespace VlessVpnTask
 
             IsConnected = true;
             SetTunnelUp(true);
+            StartAppWatch();
             PublishTile();
             FileLog.Important($"[AWG] TUN поднят: адрес {tunIp}, MTU {_awgConfig.Mtu}, DNS {string.Join(",", _awgConfig.Dns)}");
         }
@@ -815,6 +819,10 @@ namespace VlessVpnTask
         // приложение продолжало считать себя подключённым — кнопка отключения нажималась
         // впустую. Здесь плагин прямо говорит, поднят туннель или нет.
         private const string TunnelUpKey = "v_TunnelUp";
+
+        // Номер подключения. Фоновая задача по нему понимает, что пока процесс
+        // дозакрывался, система пришла с новым подключением, и выходить уже нельзя.
+        internal static int ConnectGeneration;
 
         private static void SetTunnelUp(bool up)
         {
@@ -904,6 +912,100 @@ namespace VlessVpnTask
             new byte[] { 1, 1, 1, 1 },
             new byte[] { 8, 8, 8, 8 },
         };
+
+        // ===================== туннель гаснет вместе с приложением =====================
+        //
+        // Закрытое крестиком приложение оставляло туннель работать, и следующее
+        // подключение после нового запуска натыкалось на него — отсюда ошибка 691.
+        // Приложение держит файл app.alive монопольно открытым всю свою жизнь;
+        // освободиться он может только со смертью процесса. Мы раз в две секунды
+        // пробуем его открыть: не открывается — приложение живо, открылся — его закрыли.
+        //
+        // Взводимся, только увидев приложение живым хотя бы раз. Если туннель подняли
+        // из центра уведомлений, вообще не открывая приложение, файл свободен с самого
+        // начала, и гасить такой туннель было бы ошибкой.
+
+        private const string AppAliveLockName = "app.alive";
+        private const int AppWatchPeriodMs = 2000;
+
+        private System.Threading.Timer _appWatch;
+        private int _appWatchBusy;
+        private bool _appSeenAlive;
+
+        private enum AppPresence { Alive, Gone, Unknown }
+
+        private static AppPresence ProbeApp()
+        {
+            string path;
+            try { path = System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, AppAliveLockName); }
+            catch { return AppPresence.Unknown; }
+
+            try
+            {
+                // Открываем только на чтение и никому не мешаем: если приложение держит
+                // файл монопольно, открытие упадёт с нарушением совместного доступа.
+                using (new System.IO.FileStream(path, System.IO.FileMode.Open,
+                                                System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+                {
+                    return AppPresence.Gone;
+                }
+            }
+            catch (System.IO.FileNotFoundException) { return AppPresence.Gone; }
+            catch (System.IO.IOException ex) when ((ex.HResult & 0xFFFF) == 32)   // ERROR_SHARING_VIOLATION
+            {
+                return AppPresence.Alive;
+            }
+            catch { return AppPresence.Unknown; }
+        }
+
+        private void StartAppWatch()
+        {
+            StopAppWatch();
+            _appSeenAlive = false;
+            try
+            {
+                _appWatch = new System.Threading.Timer(_ => AppWatchTick(), null, 0, AppWatchPeriodMs);
+            }
+            catch (Exception ex) { FileLog.Important($"[APP WATCH] Не удалось завести таймер: {ex.Message}"); }
+        }
+
+        private void StopAppWatch()
+        {
+            var t = _appWatch;
+            _appWatch = null;
+            try { t?.Dispose(); } catch { }
+        }
+
+        private void AppWatchTick()
+        {
+            if (_disconnected || !IsConnected) return;
+            if (System.Threading.Interlocked.Exchange(ref _appWatchBusy, 1) == 1) return;
+            try
+            {
+                var state = ProbeApp();
+                if (state == AppPresence.Alive)
+                {
+                    if (!_appSeenAlive)
+                    {
+                        _appSeenAlive = true;
+                        FileLog.Important("[APP WATCH] Приложение открыто — туннель погаснет вместе с ним.");
+                    }
+                    return;
+                }
+
+                if (state == AppPresence.Gone && _appSeenAlive)
+                {
+                    FileLog.Important("[APP WATCH] Приложение закрыто — отключаю туннель.");
+                    StopAppWatch();
+                    try { Disconnect(_channel); }
+                    catch (Exception ex) { FileLog.Important($"[APP WATCH] Отключение не удалось: {ex.Message}"); }
+                }
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref _appWatchBusy, 0);
+            }
+        }
 
         private void StartWatchdog()
         {

@@ -362,7 +362,7 @@
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->
                             <TextBlock Text="MetroBox" FontSize="28" FontWeight="Bold" Foreground="#3B82F6" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Версия 1.4.0.3" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
+                            <TextBlock Text="Версия 1.4.0.4" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
 
                             <!-- Описание -->
                             <TextBlock Text="Современный клиент VLESS VPN для устройств под управлением Windows 10 Mobile." 

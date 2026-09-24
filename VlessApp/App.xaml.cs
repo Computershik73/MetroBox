@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading.Tasks; // Добавлено для работы с Task
 using Windows.ApplicationModel;
+using Windows.Storage;
 using Windows.ApplicationModel.Activation;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
@@ -51,11 +52,36 @@ namespace VlessApp
             };
         }
 
+        // Туннель живёт в отдельном процессе и о закрытии приложения ничего не знает:
+        // на телефоне закрытие крестиком в переключателе задач не приносит приложению
+        // никакого события — к этому моменту оно уже приостановлено, и система его
+        // просто убивает. Поэтому приложение всю свою жизнь держит этот файл открытым
+        // монопольно, а туннель время от времени проверяет, не освободился ли он.
+        // Освобождается файл только со смертью процесса — это и есть сигнал.
+        internal const string AliveLockName = "app.alive";
+        private static FileStream _aliveLock;
+
+        private static async void HoldAliveLock()
+        {
+            if (_aliveLock != null) return;
+            string path = Path.Combine(ApplicationData.Current.LocalFolder.Path, AliveLockName);
+
+            // Туннель может как раз в этот миг проверять файл — тогда повторяем.
+            for (int i = 0; i < 10 && _aliveLock == null; i++)
+            {
+                try { _aliveLock = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                catch { await Task.Delay(200); }
+            }
+            if (_aliveLock == null)
+                AppLog.W("[ЖИЗНЬ] Не удалось занять app.alive — туннель не узнает о закрытии приложения.");
+        }
+
         protected override void OnLaunched(LaunchActivatedEventArgs e)
         {
             // Журнал начинается заново на каждый запуск: его отправляют целиком,
             // и разбирать склейку за все прошлые сессии невозможно.
             if (Window.Current.Content == null) AppLog.Reset();
+            HoldAliveLock();
 
             Frame rootFrame = Window.Current.Content as Frame;
 

@@ -98,6 +98,11 @@ namespace VlessVpnTask
 
             try { FileLog.Important("[BG TASK] TearDown: гашу плагин."); } catch { }
 
+            // Запоминаем, какое подключение гасим и чья это отсрочка: если за время
+            // ожидания придёт новое подключение, выходить будет нельзя.
+            int generation = System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration);
+            var deferral = _deferral;
+
             // 1) синхронно освобождаем ресурсы плагина (сокеты, движок, loopback)
             try { _plugin.Disconnect(null); } catch { }
 
@@ -113,10 +118,24 @@ namespace VlessVpnTask
             System.Threading.Tasks.Task.Run(async () =>
             {
                 try { await System.Threading.Tasks.Task.Delay(1250); } catch { }
+
+                // Пока процесс дозакрывался, система пришла с новым подключением — в тот
+                // же процесс. Выход сейчас убил бы свежий туннель на середине подъёма.
+                // Туннель закрыли приложением и сразу открыли снова — ровно так и бывает.
+                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation)
+                {
+                    try { FileLog.Important("[BG TASK] TearDown отменён: пока процесс закрывался, пришло новое подключение."); } catch { }
+
+                    // Свою отсрочку закрываем, только если она уже не нужна новому сеансу.
+                    if (!ReferenceEquals(deferral, _deferral)) { try { deferral?.Complete(); } catch { } }
+                    _exiting = false;
+                    return;
+                }
+
                 try { FileLog.Important("[BG TASK] TearDown: отпускаю задачу и выхожу."); } catch { }
 
-                try { _deferral?.Complete(); } catch { }
-                _deferral = null;
+                try { deferral?.Complete(); } catch { }
+                if (ReferenceEquals(deferral, _deferral)) _deferral = null;
 
                 try { Windows.ApplicationModel.Core.CoreApplication.Exit(); }
                 catch (Exception ex)
