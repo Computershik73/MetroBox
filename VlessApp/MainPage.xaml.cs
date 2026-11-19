@@ -1456,6 +1456,8 @@ namespace VlessApp
             add("host", p.Host);
             add("alpn", p.Alpn);
             add("mode", p.Mode);
+            if (!string.IsNullOrEmpty(p.Fingerprint)) add("fp", p.Fingerprint);
+            if (p.Mtu > 0 && p.Mtu != 1400) add("mtu", p.Mtu.ToString());
 
             // UUID парсер хранит без дефисов; отдаём в каноническом виде — так его
             // примут и сторонние клиенты.

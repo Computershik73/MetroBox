@@ -94,6 +94,8 @@ namespace VlessApp
             s["v_Host"] = p.Host ?? "";
             s["v_Flow"] = p.Flow ?? "";
             s["v_Alpn"] = p.Alpn ?? "";
+            s["v_Fingerprint"] = !string.IsNullOrEmpty(p.Fingerprint) ? p.Fingerprint : "firefox";
+            s["v_Mtu"] = p.Mtu > 0 ? p.Mtu : 1400;
             s["v_XhttpMode"] = p.Mode ?? "stream-one";
             // Второе звено цепочки (Amnezia или универсальный Multi-Hop):
             // трафик через первое звено (реле/входной узел) доводится до выходного узла,

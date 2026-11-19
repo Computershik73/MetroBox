@@ -843,18 +843,20 @@ namespace VlessVpnTask
 
         private byte[] BuildRealityClientHello()
         {
-            ushort gCipher = NextGrease();
-            ushort gGroup = NextGrease();
-            ushort gVer = NextGrease();
-            ushort gExtA = NextGrease();
-            ushort gExtB = NextGrease();
+            bool isFirefox = string.Equals(_cfg?.Fingerprint, "firefox", StringComparison.OrdinalIgnoreCase);
+
+            ushort gCipher = isFirefox ? (ushort)0 : NextGrease();
+            ushort gGroup = isFirefox ? (ushort)0 : NextGrease();
+            ushort gVer = isFirefox ? (ushort)0 : NextGrease();
+            ushort gExtA = isFirefox ? (ushort)0 : NextGrease();
+            ushort gExtB = isFirefox ? (ushort)0 : NextGrease();
             // gExtA и gExtB идут в ClientHello как ТИПЫ двух GREASE-расширений, а RFC 8446
             // запрещает два расширения одного типа. Значения тянулись независимо из набора
             // в 16 штук, поэтому раз на шестнадцать они совпадали — и сервер отвечал на такую
             // запись fatal decode_error (alert 0232). Chrome по той же причине берёт для этих
             // двух слотов заведомо разные значения. При совпадении сдвигаем на шаг по набору
             // (0x0a0a…0xfafa, с переходом через край) — детерминированно и всегда валидно.
-            if (gExtB == gExtA)
+            if (!isFirefox && gExtB == gExtA)
             {
                 byte hi = (byte)((((gExtA >> 8) + 0x10) & 0xF0) | 0x0A);
                 gExtB = (ushort)((hi << 8) | hi);
@@ -868,36 +870,53 @@ namespace VlessVpnTask
 
                 // cipher_suites.
                 //
-                // REALITY: GREASE + только TLS_AES_128_GCM_SHA256 (0x1301). 0x1301 обязателен
+                // REALITY: GREASE (у Chrome) + только TLS_AES_128_GCM_SHA256 (0x1301). 0x1301 обязателен
                 // в любом TLS 1.3 сервере (RFC 8446 §9.1), а наш KDF умеет только SHA-256.
-                // Предлагать 0x1302/0x1303 нельзя — сервер их выберет, а расшифровать мы не
-                // сможем (ровно так и ломалось: сервер выбирал 0x1302).
+                // Для fp=firefox: чистый 0x1301 без GREASE (предотвращает срабатывание эвристик DPI).
                 //
-                // ОБЫЧНЫЙ TLS (PlainTls): одинокий 0x1301 — крайне нетипичный отпечаток. Happ
-                // ходит на этот же сервер с uTLS-отпечатком Chrome и работает, а наш ClientHello
-                // сервер/фильтр рвёт до ServerHello. Поэтому предлагаем Chrome-подобный набор.
-                // Если сервер выберет шифр, который мы не реализуем, ParseServerHello скажет об
-                // этом явно (и тогда будет понятно, что именно доделывать).
+                // ОБЫЧНЫЙ TLS (PlainTls): Chrome предлагает GREASE + 17 шифров. Firefox предлагает
+                // стандартный набор без GREASE.
                 byte[] cipherSuites;
                 if (PlainTls)
                 {
-                    cipherSuites = new byte[]
+                    if (isFirefox)
                     {
-                        (byte)(gCipher >> 8), (byte)gCipher,
-                        0x13,0x01, 0x13,0x02, 0x13,0x03,
-                        0xc0,0x2b, 0xc0,0x2f, 0xc0,0x2c, 0xc0,0x30,
-                        0xcc,0xa9, 0xcc,0xa8,
-                        0xc0,0x13, 0xc0,0x14,
-                        0x00,0x9c, 0x00,0x9d, 0x00,0x2f, 0x00,0x35
-                    };
+                        cipherSuites = new byte[]
+                        {
+                            0x13,0x01, 0x13,0x02, 0x13,0x03,
+                            0xc0,0x2b, 0xc0,0x2f, 0xc0,0x2c, 0xc0,0x30,
+                            0xcc,0xa9, 0xcc,0xa8,
+                            0xc0,0x13, 0xc0,0x14,
+                            0x00,0x9c, 0x00,0x9d, 0x00,0x2f, 0x00,0x35
+                        };
+                    }
+                    else
+                    {
+                        cipherSuites = new byte[]
+                        {
+                            (byte)(gCipher >> 8), (byte)gCipher,
+                            0x13,0x01, 0x13,0x02, 0x13,0x03,
+                            0xc0,0x2b, 0xc0,0x2f, 0xc0,0x2c, 0xc0,0x30,
+                            0xcc,0xa9, 0xcc,0xa8,
+                            0xc0,0x13, 0xc0,0x14,
+                            0x00,0x9c, 0x00,0x9d, 0x00,0x2f, 0x00,0x35
+                        };
+                    }
                 }
                 else
                 {
-                    cipherSuites = new byte[]
+                    if (isFirefox)
                     {
-                        (byte)(gCipher >> 8), (byte)gCipher,
-                        0x13, 0x01
-                    };
+                        cipherSuites = new byte[] { 0x13, 0x01 };
+                    }
+                    else
+                    {
+                        cipherSuites = new byte[]
+                        {
+                            (byte)(gCipher >> 8), (byte)gCipher,
+                            0x13, 0x01
+                        };
+                    }
                 }
                 ms.WriteByte((byte)(cipherSuites.Length >> 8));
                 ms.WriteByte((byte)(cipherSuites.Length & 0xFF));
@@ -905,7 +924,7 @@ namespace VlessVpnTask
 
                 ms.WriteByte(0x01); ms.WriteByte(0x00);           // legacy_compression = null
 
-                byte[] exts = BuildExtensions(gGroup, gVer, gExtA, gExtB, cipherSuites.Length);
+                byte[] exts = BuildExtensions(gGroup, gVer, gExtA, gExtB, cipherSuites.Length, isFirefox);
                 ms.WriteByte((byte)(exts.Length >> 8)); ms.WriteByte((byte)(exts.Length & 0xFF));
                 ms.Write(exts, 0, exts.Length);
 
@@ -981,12 +1000,13 @@ namespace VlessVpnTask
             }
         }
 
-        private byte[] BuildExtensions(ushort gGroup, ushort gVer, ushort gExtA, ushort gExtB, int cipherBytes)
+        private byte[] BuildExtensions(ushort gGroup, ushort gVer, ushort gExtA, ushort gExtB, int cipherBytes, bool isFirefox)
         {
             using (var ms = new MemoryStream())
             {
-                // 1. GREASE (пустое)
-                AddExt(ms, gExtA, new byte[0]);
+                // 1. GREASE (только Chrome)
+                if (!isFirefox)
+                    AddExt(ms, gExtA, new byte[0]);
 
                 // 2. server_name.
                 // Пустой SNI — законная конфигурация: так отдаёт конфиги Amnezia.
@@ -1010,12 +1030,26 @@ namespace VlessVpnTask
                 AddExt(ms, 0x0017, new byte[0]);
                 // 4. renegotiation_info
                 AddExt(ms, 0xff01, new byte[] { 0x00 });
-                // 5. supported_groups: GREASE, x25519, secp256r1, secp384r1
-                AddExt(ms, 0x000a, new byte[] {
-                    0x00, 0x08,
-                    (byte)(gGroup >> 8), (byte)gGroup,
-                    0x00, 0x1d, 0x00, 0x17, 0x00, 0x18
-                });
+
+                // 5. supported_groups:
+                if (isFirefox)
+                {
+                    // Firefox: x25519 (0x001d), secp256r1 (0x0017), secp384r1 (0x0018), secp521r1 (0x0019) — БЕЗ GREASE
+                    AddExt(ms, 0x000a, new byte[] {
+                        0x00, 0x08,
+                        0x00, 0x1d, 0x00, 0x17, 0x00, 0x18, 0x00, 0x19
+                    });
+                }
+                else
+                {
+                    // Chrome: GREASE + x25519, secp256r1, secp384r1
+                    AddExt(ms, 0x000a, new byte[] {
+                        0x00, 0x08,
+                        (byte)(gGroup >> 8), (byte)gGroup,
+                        0x00, 0x1d, 0x00, 0x17, 0x00, 0x18
+                    });
+                }
+
                 // 6. ec_point_formats: uncompressed
                 AddExt(ms, 0x000b, new byte[] { 0x01, 0x00 });
                 // 7. session_ticket
@@ -1024,60 +1058,83 @@ namespace VlessVpnTask
                 AddExt(ms, 0x0010, BuildAlpnList());
                 // 9. status_request (OCSP)
                 AddExt(ms, 0x0005, new byte[] { 0x01, 0x00, 0x00, 0x00, 0x00 });
-                // 10. signature_algorithms (Chrome-порядок)
+                // 10. signature_algorithms
                 AddExt(ms, 0x000d, new byte[] {
                     0x00, 0x10,
                     0x04,0x03, 0x08,0x04, 0x04,0x01, 0x05,0x03,
                     0x08,0x05, 0x05,0x01, 0x08,0x06, 0x06,0x01
                 });
-                // 11. signed_certificate_timestamp
-                AddExt(ms, 0x0012, new byte[0]);
-                // 12. key_share: GREASE(1 байт) + x25519(32 байта). GREASE-group совпадает с supported_groups.
-                byte[] ks = new byte[2 + 5 + 4 + 32];
-                int ksLen = 5 + 4 + 32; // длина client_shares
-                ks[0] = (byte)(ksLen >> 8); ks[1] = (byte)ksLen;
-                ks[2] = (byte)(gGroup >> 8); ks[3] = (byte)gGroup; ks[4] = 0x00; ks[5] = 0x01; ks[6] = 0x00;
-                ks[7] = 0x00; ks[8] = 0x1d; ks[9] = 0x00; ks[10] = 0x20;
-                System.Buffer.BlockCopy(_clientPublic, 0, ks, 11, 32);
-                AddExt(ms, 0x0033, ks);
+                // 11. signed_certificate_timestamp (Chrome)
+                if (!isFirefox)
+                    AddExt(ms, 0x0012, new byte[0]);
+
+                // 12. key_share:
+                if (isFirefox)
+                {
+                    // Firefox: только x25519 (32 байта), БЕЗ GREASE
+                    byte[] ks = new byte[2 + 4 + 32];
+                    int ksLen = 4 + 32;
+                    ks[0] = (byte)(ksLen >> 8); ks[1] = (byte)ksLen;
+                    ks[2] = 0x00; ks[3] = 0x1d; ks[4] = 0x00; ks[5] = 0x20;
+                    System.Buffer.BlockCopy(_clientPublic, 0, ks, 6, 32);
+                    AddExt(ms, 0x0033, ks);
+                }
+                else
+                {
+                    // Chrome: GREASE(1 байт) + x25519(32 байта)
+                    byte[] ks = new byte[2 + 5 + 4 + 32];
+                    int ksLen = 5 + 4 + 32;
+                    ks[0] = (byte)(ksLen >> 8); ks[1] = (byte)ksLen;
+                    ks[2] = (byte)(gGroup >> 8); ks[3] = (byte)gGroup; ks[4] = 0x00; ks[5] = 0x01; ks[6] = 0x00;
+                    ks[7] = 0x00; ks[8] = 0x1d; ks[9] = 0x00; ks[10] = 0x20;
+                    System.Buffer.BlockCopy(_clientPublic, 0, ks, 11, 32);
+                    AddExt(ms, 0x0033, ks);
+                }
+
                 // 13. psk_key_exchange_modes: psk_dhe_ke
                 AddExt(ms, 0x002d, new byte[] { 0x01, 0x01 });
-                // 14. supported_versions.
-                // REALITY: GREASE + только TLS 1.3 (сервер обязан выбрать 1.3 — мы больше ничего
-                // не умеем). PlainTls: добавляем ещё и 1.2, как это делает Chrome — так CH
-                // выглядит браузерным. Любой TLS 1.3-сервер всё равно выберет 1.3 (берётся
-                // максимальная общая версия), а если сервер только 1.2 — сработает запасной
-                // системный путь в WsTransport.
-                AddExt(ms, 0x002b, PlainTls
-                    ? new byte[] { 0x06, (byte)(gVer >> 8), (byte)gVer, 0x03, 0x04, 0x03, 0x03 }
-                    : new byte[] { 0x04, (byte)(gVer >> 8), (byte)gVer, 0x03, 0x04 });
-                // 15. compress_certificate: brotli — ТОЛЬКО в обычном TLS.
-                // В reality его просить нельзя: сервер честно отвечает сжатым сертификатом
-                // (handshake-сообщение типа 25 вместо 11), распаковать brotli в UWP нечем,
-                // InspectServerCertificate не вызывается — и определение фолбэка
-                // (ServerFellBack) перестаёт работать. Клиент считает хендшейк успешным
-                // и льёт в браузер HTTP/2-мусор с сайта-прикрытия.
-                // В PlainTls сертификат мы и так не проверяем, а отпечаток тут подобран
-                // под Chrome — там расширение оставляем.
-                if (PlainTls)
-                    AddExt(ms, 0x001b, new byte[] { 0x02, 0x00, 0x02 });
-                // 16. application_settings (ALPS) — только когда предлагаем h2
-                if (!OfferH1Only)
-                    AddExt(ms, 0x4469, new byte[] { 0x00, 0x03, 0x02, (byte)'h', (byte)'2' });
-                // 17. GREASE (1-байтовая нагрузка)
-                AddExt(ms, gExtB, new byte[] { 0x00 });
 
-                // 18. padding до 512 (правило BoringSSL: окно 256..511)
-                // cipherBytes раньше был захардкожен как 8 и разошёлся с реальным списком
-                // (после сокращения до 0x1301 стало 4) — из-за этого ClientHello не добивался
-                // до задуманных 512 байт. Теперь считаем от фактической длины.
-                byte[] soFar = ms.ToArray();
-                int bodyNoPad = 2 + 32 + 1 + 32 + 2 + cipherBytes + 2 + 2 + soFar.Length;
-                if (bodyNoPad >= 256 && bodyNoPad < 512)
+                // 14. supported_versions:
+                if (isFirefox)
                 {
-                    int padLen = 512 - bodyNoPad - 4; // 4 = заголовок padding-расширения
-                    if (padLen < 0) padLen = 0;
-                    AddExt(ms, 0x0015, new byte[padLen]);
+                    // Firefox: чистый список версий без GREASE
+                    AddExt(ms, 0x002b, PlainTls
+                        ? new byte[] { 0x04, 0x03, 0x04, 0x03, 0x03 }
+                        : new byte[] { 0x02, 0x03, 0x04 });
+                }
+                else
+                {
+                    AddExt(ms, 0x002b, PlainTls
+                        ? new byte[] { 0x06, (byte)(gVer >> 8), (byte)gVer, 0x03, 0x04, 0x03, 0x03 }
+                        : new byte[] { 0x04, (byte)(gVer >> 8), (byte)gVer, 0x03, 0x04 });
+                }
+
+                // 15. compress_certificate: brotli — только Chrome PlainTls
+                if (PlainTls && !isFirefox)
+                    AddExt(ms, 0x001b, new byte[] { 0x02, 0x00, 0x02 });
+
+                // 16. application_settings (ALPS) — только Chrome h2, в Firefox ALPS отсутствует
+                if (!OfferH1Only && !isFirefox)
+                    AddExt(ms, 0x4469, new byte[] { 0x00, 0x03, 0x02, (byte)'h', (byte)'2' });
+
+                // 17. GREASE (только Chrome)
+                if (!isFirefox)
+                    AddExt(ms, gExtB, new byte[] { 0x00 });
+
+                // 18. padding до 512 (только Chrome / BoringSSL)
+                // Для fp=firefox padding не накладывается, за счёт чего ClientHello
+                // сохраняет ультракомпактный размер (~350–500 байт), гарантированно
+                // помещается в один неделимый TCP-сегмент и не триггерит эвристики middlebox/DPI.
+                if (!isFirefox)
+                {
+                    byte[] soFar = ms.ToArray();
+                    int bodyNoPad = 2 + 32 + 1 + 32 + 2 + cipherBytes + 2 + 2 + soFar.Length;
+                    if (bodyNoPad >= 256 && bodyNoPad < 512)
+                    {
+                        int padLen = 512 - bodyNoPad - 4; // 4 = заголовок padding-расширения
+                        if (padLen < 0) padLen = 0;
+                        AddExt(ms, 0x0015, new byte[padLen]);
+                    }
                 }
 
                 return ms.ToArray();

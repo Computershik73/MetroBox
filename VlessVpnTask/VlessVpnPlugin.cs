@@ -26,6 +26,8 @@ namespace VlessVpnTask
         public string Host { get; set; }
         public string Flow { get; set; }
         public string Alpn { get; set; }
+        public string Fingerprint { get; set; } = "firefox";
+        public int Mtu { get; set; } = 1400;
 
         // Второе звено цепочки Amnezia. Address/Port выше — это реле, которое
         // умеет доводить только до этого узла. Пока используется для разовой
@@ -61,6 +63,8 @@ namespace VlessVpnTask
                 Type = Type,
                 Security = Security,
                 Alpn = Alpn,
+                Fingerprint = Fingerprint,
+                Mtu = Mtu,
                 Path = Path,
                 Host = Host,
                 XhttpMode = XhttpMode
@@ -273,6 +277,8 @@ namespace VlessVpnTask
                     Host = localSettings.Values["v_Host"] as string,
                     Flow = localSettings.Values["v_Flow"] as string,
                     Alpn = localSettings.Values["v_Alpn"] as string,
+                    Fingerprint = (localSettings.Values["v_Fingerprint"] as string) ?? "firefox",
+                    Mtu = (localSettings.Values["v_Mtu"] as int?) ?? 1400,
                     XhttpMode = (localSettings.Values["v_XhttpMode"] as string) ?? "stream-one",
                     Method = (localSettings.Values["v_SsMethod"] as string) ?? "",
                     Password = (localSettings.Values["v_SsPassword"] as string) ?? "",
@@ -518,11 +524,12 @@ namespace VlessVpnTask
                     FileLog.Important("[VPN PLUGIN] DIRECT-режим (xhttp без mux): соединения открываются по требованию, пред-канал не нужен.");
                 }
 
+                uint mtu = _config.Mtu > 0 ? (uint)_config.Mtu : 1400;
                 _channel.StartWithMainTransport(
                     ipv4List, ipv6List, null, routes, dnsAssignment,
-                    1400, 1400, true, _dummyTransport);
+                    mtu, mtu, true, _dummyTransport);
 
-                FileLog.W("[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ!");
+                FileLog.W($"[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ! MTU={mtu}, FP='{_config.Fingerprint}'");
                 IsConnected = true;
                 SetTunnelUp(true);
                 StartWatchdog();

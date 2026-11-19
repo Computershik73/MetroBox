@@ -31,6 +31,8 @@ namespace VlessApp
         [DataMember] public string Path { get; set; }
         [DataMember] public string Host { get; set; }
         [DataMember] public string Alpn { get; set; }
+        [DataMember] public string Fingerprint { get; set; } = "firefox";
+        [DataMember] public int Mtu { get; set; } = 1400;
         [DataMember] public string SubscriptionGroup { get; set; } = "Ручной импорт";
 
         // Отображаемое имя подписки. SubscriptionGroup — это ключ (ссылка), по
@@ -517,8 +519,8 @@ namespace VlessApp
                 string query = uri.Query.TrimStart('?');
                 var pairs = query.Split(new[] { '&' }, StringSplitOptions.RemoveEmptyEntries);
 
-                // Параметры, которые разбор не читает. Часть из них безобидна (fp, spx),
-                // часть меняет протокол (extra, xmux, downloadSettings) — и тогда сервер
+                // Параметры, которые разбор не читает. Часть из них безобидна (spx),
+                // часть меняет протокол (extra, xmux) — и тогда сервер
                 // ждёт не того, что шлёт приложение. В логе они нужны целиком: жалоба
                 // «в Exclave работает, здесь нет» чаще всего упирается именно в них.
                 var ignoredKeys = new List<string>();
@@ -543,6 +545,15 @@ namespace VlessApp
                             case "host": profile.Host = val; break;
                             case "alpn": profile.Alpn = val; break;
                             case "mode": profile.Mode = val; break;
+                            case "fp":
+                            case "fingerprint":
+                                if (!string.IsNullOrWhiteSpace(val)) profile.Fingerprint = val.Trim().ToLowerInvariant();
+                                break;
+                            case "mtu":
+                                int parsedMtu;
+                                if (int.TryParse(val, out parsedMtu) && parsedMtu >= 576 && parsedMtu <= 1500)
+                                    profile.Mtu = parsedMtu;
+                                break;
                             case "extra":
                                 try
                                 {
@@ -1863,6 +1874,11 @@ namespace VlessApp
                         string tlsSni = GetJsonString(tls, "serverName");
                         if (!string.IsNullOrEmpty(tlsSni)) profile.Sni = tlsSni;
                     }
+
+                    string fp = FirstNonEmptyJson(reality, "fingerprint", "fp");
+                    if (string.IsNullOrEmpty(fp)) fp = FirstNonEmptyJson(ss, "fingerprint", "fp");
+                    if (string.IsNullOrEmpty(fp) && tls != null) fp = FirstNonEmptyJson(tls, "fingerprint", "fp");
+                    if (!string.IsNullOrEmpty(fp)) profile.Fingerprint = fp.Trim().ToLowerInvariant();
                 }
 
                 if (string.IsNullOrEmpty(profile.Uuid) || string.IsNullOrEmpty(profile.Address))
