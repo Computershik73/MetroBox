@@ -146,6 +146,7 @@
     <Compile Include="AmneziaLink.cs" />
     <Compile Include="CountryFlags.cs" />
     <Compile Include="HappCrypto.cs" />
+    <Compile Include="IncyCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
   </ItemGroup>

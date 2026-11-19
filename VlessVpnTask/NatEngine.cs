@@ -759,25 +759,26 @@ public void SignalStop()
             if (!isSs && Config != null &&
                 !string.IsNullOrEmpty(Config.ChainExitHost) && Config.ChainExitPort > 0)
             {
+                chainOuter = new VlessConnection(Config, Channel);
                 byte[] exitIp;
                 if (VlessConnection.TryParseIpv4Public(Config.ChainExitHost, out exitIp))
                 {
-                    chainOuter = new VlessConnection(Config, Channel);
                     chainOuter.ConfigureDirectIp(exitIp, false, (ushort)Config.ChainExitPort);
-                    if (!await chainOuter.StartAsync())
-                    {
-                        FileLog.Important("[CHAIN] Первое звено (реле) не поднялось.");
-                        try { chainOuter.Close(); } catch { }
-                        ReleaseDirectSlot(c);
-                        CloseConnLocal(c);
-                        return;
-                    }
-                    FileLog.Important($"[CHAIN] Первое звено поднято: реле → {Config.ChainExitHost}:{Config.ChainExitPort}.");
                 }
                 else
                 {
-                    FileLog.Important($"[CHAIN] Выходной узел '{Config.ChainExitHost}' не IPv4 — цепочку не строю.");
+                    chainOuter.ConfigureDirectDomain(Config.ChainExitHost, (ushort)Config.ChainExitPort);
                 }
+
+                if (!await chainOuter.StartAsync())
+                {
+                    FileLog.Important("[CHAIN] Первое звено (входной прокси) не поднялось.");
+                    try { chainOuter.Close(); } catch { }
+                    ReleaseDirectSlot(c);
+                    CloseConnLocal(c);
+                    return;
+                }
+                FileLog.Important($"[CHAIN] Первое звено поднято: входной прокси → {Config.ChainExitHost}:{Config.ChainExitPort}.");
             }
 
             // Второе звено проверяется выходным узлом по ЕГО ключам REALITY —

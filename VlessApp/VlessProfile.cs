@@ -64,8 +64,44 @@ namespace VlessApp
         [DataMember] public string AmneziaExitShortId { get; set; } = "";
         [DataMember] public string AmneziaExitFlow { get; set; } = "";
 
+        // Универсальный Multi-Hop (произвольная связка Entry -> Exit узлов):
+        // трафик сначала направляется через текущий узел (Entry: VLESS Reality, XHTTP,
+        // WS LTE, AmneziaWG), а внутри него поднимается туннель к целевому Exit-узлу
+        // (например, зарубежному серверу exit-node.example.org:443).
+        [DataMember] public string ChainExitHost { get; set; } = "";
+        [DataMember] public int ChainExitPort { get; set; }
+        [DataMember] public string ChainExitUuid { get; set; } = "";
+        [DataMember] public string ChainExitPublicKey { get; set; } = "";
+        [DataMember] public string ChainExitSni { get; set; } = "";
+        [DataMember] public string ChainExitShortId { get; set; } = "";
+        [DataMember] public string ChainExitFlow { get; set; } = "";
+
         [IgnoreDataMember]
         public bool HasAmneziaChain => !string.IsNullOrEmpty(AmneziaExitHost) && AmneziaExitPort > 0;
+
+        [IgnoreDataMember]
+        public bool HasChain => (!string.IsNullOrEmpty(ChainExitHost) && ChainExitPort > 0) || HasAmneziaChain;
+
+        [IgnoreDataMember]
+        public string EffectiveExitHost => !string.IsNullOrEmpty(ChainExitHost) ? ChainExitHost : AmneziaExitHost;
+
+        [IgnoreDataMember]
+        public int EffectiveExitPort => ChainExitPort > 0 ? ChainExitPort : AmneziaExitPort;
+
+        [IgnoreDataMember]
+        public string EffectiveExitUuid => !string.IsNullOrEmpty(ChainExitUuid) ? ChainExitUuid : AmneziaExitUuid;
+
+        [IgnoreDataMember]
+        public string EffectiveExitPublicKey => !string.IsNullOrEmpty(ChainExitPublicKey) ? ChainExitPublicKey : AmneziaExitPublicKey;
+
+        [IgnoreDataMember]
+        public string EffectiveExitSni => !string.IsNullOrEmpty(ChainExitSni) ? ChainExitSni : AmneziaExitSni;
+
+        [IgnoreDataMember]
+        public string EffectiveExitShortId => !string.IsNullOrEmpty(ChainExitShortId) ? ChainExitShortId : AmneziaExitShortId;
+
+        [IgnoreDataMember]
+        public string EffectiveExitFlow => !string.IsNullOrEmpty(ChainExitFlow) ? ChainExitFlow : AmneziaExitFlow;
 
         // Строка страны есть в списке, но конфиг под неё ещё не запрашивали.
         // Шлюз выдаёт конфиги по одному, поэтому держать 42 готовых нельзя —
@@ -213,13 +249,13 @@ namespace VlessApp
         // Цепочка протокола в верхнем регистре — «VLESS / TCP / REALITY».
         // Адрес сюда больше не выводим: он длинный и переносил строку, а увидеть
         // его можно в шаринге. Полный вид остался в DetailsText.
-        public string DisplayText => AmneziaNotIssued
+        public string DisplayText => (AmneziaNotIssued
             ? $"{Up(AmneziaProtocol)} · нажмите, чтобы получить конфиг"
             : IsAmneziaWg
                 ? "AMNEZIAWG"
                 : IsShadowsocks
                     ? $"SHADOWSOCKS / {Up(Method)}"
-                    : $"VLESS / {Up(Type)} / {Up(Security)}";
+                    : $"VLESS / {Up(Type)} / {Up(Security)}") + (HasChain ? " (MULTIHOP)" : "");
 
         [IgnoreDataMember]
         public string DetailsText => $"{Address}:{Port}";
@@ -507,6 +543,24 @@ namespace VlessApp
                             case "host": profile.Host = val; break;
                             case "alpn": profile.Alpn = val; break;
                             case "mode": profile.Mode = val; break;
+                            case "extra":
+                                try
+                                {
+                                    JsonObject extraObj;
+                                    if (JsonObject.TryParse(val, out extraObj))
+                                    {
+                                        var dl = GetJsonObject(extraObj, "downloadSettings");
+                                        if (dl != null)
+                                        {
+                                            string dlPath = GetJsonString(dl, "path");
+                                            if (!string.IsNullOrEmpty(dlPath)) profile.Path = dlPath;
+                                            string dlHost = GetJsonString(dl, "host");
+                                            if (!string.IsNullOrEmpty(dlHost)) profile.Host = dlHost;
+                                        }
+                                    }
+                                }
+                                catch { }
+                                break;
                             case "pbk":
                             case "publickey":
                                 val = val.Replace("-", "+").Replace("_", "/");
@@ -960,6 +1014,36 @@ namespace VlessApp
                 return happProfiles;
             }
 
+            // Зашифрованные deep-link подписки INCY: incy://crypt1/<payload>.
+            // Распаковываем AES-256-GCM payload с ключом K1 и обрабатываем результат.
+            if (IncyCrypto.IsIncyLink(input))
+            {
+                string providerName;
+                string unwrapped = IncyCrypto.Unwrap(input, out providerName);
+                if (string.IsNullOrWhiteSpace(unwrapped))
+                    throw new Exception("Не удалось расшифровать incy://-подписку (поддерживается только crypt1).");
+
+                unwrapped = unwrapped.Trim();
+                bool singleLine = unwrapped.IndexOf('\n') < 0 && unwrapped.IndexOf('\r') < 0;
+                if (singleLine &&
+                    (unwrapped.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                     unwrapped.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var fetched = await ProcessInputAsync(unwrapped);
+                    if (!string.IsNullOrEmpty(providerName))
+                    {
+                        foreach (var p in fetched)
+                            if (string.IsNullOrEmpty(p.GroupTitle)) p.GroupTitle = providerName;
+                    }
+                    return fetched;
+                }
+
+                string group = !string.IsNullOrEmpty(providerName) ? providerName : "INCY (шифрованная подписка)";
+                var incyProfiles = await ParseSubscriptionAsync(unwrapped, group);
+                foreach (var p in incyProfiles) p.LastUpdated = DateTime.Now;
+                return incyProfiles;
+            }
+
             if (input.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 input.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
@@ -991,27 +1075,60 @@ namespace VlessApp
                         }
                         string hwid = localSettings.Values["v_DeviceHwid"] as string;
 
-                        client.DefaultRequestHeaders.UserAgent.Clear();
-                        client.DefaultRequestHeaders.UserAgent.TryParseAdd("Happ/3.13.0");
+                        // Адаптивная ротация User-Agent: сначала OneXray (чистый Base64 без блокировок HWID),
+                        // затем Happ (для провайдеров с HWID-привязкой), затем v2rayN.
+                        HttpResponseMessage response = null;
+                        string[] tryUserAgents = new[] { "OneXray/1.5.0", "Happ/3.13.0", "v2rayN/7.25.0" };
+                        Exception lastEx = null;
 
-                        if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
-                        client.DefaultRequestHeaders.Add("X-Hwid", hwid);
+                        foreach (var ua in tryUserAgents)
+                        {
+                            try
+                            {
+                                client.DefaultRequestHeaders.UserAgent.Clear();
+                                client.DefaultRequestHeaders.UserAgent.TryParseAdd(ua);
 
-                        if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
-                        client.DefaultRequestHeaders.Add("X-Device-Os", "Android");
+                                if (ua.StartsWith("Happ"))
+                                {
+                                    if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
+                                    client.DefaultRequestHeaders.Add("X-Hwid", hwid);
+                                    if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
+                                    client.DefaultRequestHeaders.Add("X-Device-Os", "Android");
+                                    if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
+                                    client.DefaultRequestHeaders.Add("X-Ver-Os", "14");
+                                    if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
+                                    client.DefaultRequestHeaders.Add("X-Device-Model", "Samsung Galaxy S24");
+                                    if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
+                                    client.DefaultRequestHeaders.Add("X-App-Version", "3.13.0");
+                                }
+                                else
+                                {
+                                    if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
+                                    if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
+                                    if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
+                                    if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
+                                    if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
+                                }
 
-                        if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
-                        client.DefaultRequestHeaders.Add("X-Ver-Os", "14");
+                                Debug.WriteLine($"[NETWORK] Запрос к {input} с UA={ua}");
+                                var r = await client.GetAsync(input);
+                                if (r.IsSuccessStatusCode)
+                                {
+                                    response = r;
+                                    break;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                lastEx = ex;
+                            }
+                        }
 
-                        if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
-                        client.DefaultRequestHeaders.Add("X-Device-Model", "Samsung Galaxy S24");
-
-                        if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
-                        client.DefaultRequestHeaders.Add("X-App-Version", "3.13.0");
-
-                        Debug.WriteLine($"[NETWORK] Отправляем запрос к: {input}");
-                        var response = await client.GetAsync(input);
-                        response.EnsureSuccessStatusCode();
+                        if (response == null)
+                        {
+                            if (lastEx != null) throw lastEx;
+                            throw new Exception("Не удалось загрузить подписку (сервер отклонил все варианты User-Agent).");
+                        }
 
                         var rawContent = await response.Content.ReadAsStringAsync();
 
@@ -1201,7 +1318,24 @@ namespace VlessApp
                         foreach (var innerLine in inner.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
                         {
                             var hp = Parse(innerLine.Trim());
-                            if (hp != null) { hp.SubscriptionGroup = groupName; list.Add(hp); }
+                            if (hp != null && !IsWarningStub(hp)) { hp.SubscriptionGroup = groupName; list.Add(hp); Report(hp); }
+                        }
+                    }
+                    continue;
+                }
+
+                // Вложенная зашифрованная incy://-ссылка внутри списка
+                if (IncyCrypto.IsIncyLink(trimmed))
+                {
+                    string pName;
+                    string inner = IncyCrypto.Unwrap(trimmed, out pName);
+                    if (!string.IsNullOrWhiteSpace(inner))
+                    {
+                        string gName = !string.IsNullOrEmpty(pName) ? pName : groupName;
+                        foreach (var innerLine in inner.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            var ip = Parse(innerLine.Trim());
+                            if (ip != null && !IsWarningStub(ip)) { ip.SubscriptionGroup = gName; list.Add(ip); Report(ip); }
                         }
                     }
                     continue;
@@ -1259,6 +1393,11 @@ namespace VlessApp
                 var p = Parse(trimmed);
                 if (p != null)
                 {
+                    if (IsWarningStub(p))
+                    {
+                        Debug.WriteLine($"[PARSER] Пропущена предупредительная заглушка панели: {p.Name} ({p.Address}:{p.Port})");
+                        continue;
+                    }
                     p.SubscriptionGroup = groupName;
                     list.Add(p);
                     Debug.WriteLine($"[PARSER] Успешно добавлен профиль: {p.Name} ({p.Address})");
@@ -1487,6 +1626,24 @@ namespace VlessApp
             }
         }
 
+        // Распознавание предупредительных узлов-заглушек (0.0.0.0, 127.0.0.1, порт 1,
+        // тексты "Приложение не поддерживается", "Клиент устарел" и т.д.), которые коммерческие
+        // панели (Remnawave, 3X-UI) шлют вместо реальных рабочих узлов при несоответствии клиента.
+        public static bool IsWarningStub(VlessProfile p)
+        {
+            if (p == null) return true;
+            if (p.Address == "0.0.0.0" || p.Address == "127.0.0.1" || p.Port <= 1) return true;
+            if (!string.IsNullOrEmpty(p.Name))
+            {
+                if (p.Name.IndexOf("не поддерживается", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("устарел", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("обновите", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("не поддерживает json", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+            return false;
+        }
+
         // =========================================================================
         // 4. ВСТРОЕННЫЙ JSON-ПАРСЕР ДЛЯ SING-BOX / XRAY КОНФИГУРАЦИЙ
         // =========================================================================
@@ -1519,13 +1676,21 @@ namespace VlessApp
                                             if (string.Equals(proto, "vless", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 var profile = ParseVlessOutbound(outObj, remarks);
-                                                if (profile != null) { list.Add(profile); Report(profile); }
+                                                if (profile != null)
+                                                {
+                                                    if (!IsWarningStub(profile)) { list.Add(profile); Report(profile); }
+                                                    else Debug.WriteLine($"[PARSER] Пропущена предупредительная заглушка: {profile.Name}");
+                                                }
                                                 else Skip("vless", "outbound не разобрался: нет id или адреса");
                                             }
                                             else if (string.Equals(proto, "shadowsocks", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 var profile = ParseShadowsocksOutbound(outObj, remarks);
-                                                if (profile != null) { list.Add(profile); Report(profile); }
+                                                if (profile != null)
+                                                {
+                                                    if (!IsWarningStub(profile)) { list.Add(profile); Report(profile); }
+                                                    else Debug.WriteLine($"[PARSER] Пропущена предупредительная заглушка: {profile.Name}");
+                                                }
                                                 else Skip("shadowsocks", "outbound не разобрался: нет адреса, шифра или пароля");
                                             }
                                             else if (!string.IsNullOrEmpty(proto) &&
@@ -1655,6 +1820,19 @@ namespace VlessApp
                         profile.Path = GetJsonString(xhttp, "path");
                         profile.Host = GetJsonString(xhttp, "host");
                         profile.Mode = GetJsonString(xhttp, "mode");
+
+                        var extra = GetJsonObject(xhttp, "extra");
+                        if (extra != null)
+                        {
+                            var dl = GetJsonObject(extra, "downloadSettings");
+                            if (dl != null)
+                            {
+                                string dlPath = GetJsonString(dl, "path");
+                                if (!string.IsNullOrEmpty(dlPath)) profile.Path = dlPath;
+                                string dlHost = GetJsonString(dl, "host");
+                                if (!string.IsNullOrEmpty(dlHost)) profile.Host = dlHost;
+                            }
+                        }
                     }
 
                     var reality = GetJsonObject(ss, "realitySettings");

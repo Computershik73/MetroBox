@@ -95,16 +95,16 @@ namespace VlessApp
             s["v_Flow"] = p.Flow ?? "";
             s["v_Alpn"] = p.Alpn ?? "";
             s["v_XhttpMode"] = p.Mode ?? "stream-one";
-            // Второе звено цепочки Amnezia: реле доводит только до этого узла,
-            // а он проверяет уже свои ключи REALITY — поэтому нужны все параметры,
-            // а не только адрес.
-            s["v_ChainExitHost"] = p.AmneziaExitHost ?? "";
-            s["v_ChainExitPort"] = p.AmneziaExitPort;
-            s["v_ChainExitUuid"] = p.AmneziaExitUuid ?? "";
-            s["v_ChainExitPublicKey"] = p.AmneziaExitPublicKey ?? "";
-            s["v_ChainExitSni"] = p.AmneziaExitSni ?? "";
-            s["v_ChainExitShortId"] = p.AmneziaExitShortId ?? "";
-            s["v_ChainExitFlow"] = p.AmneziaExitFlow ?? "";
+            // Второе звено цепочки (Amnezia или универсальный Multi-Hop):
+            // трафик через первое звено (реле/входной узел) доводится до выходного узла,
+            // а тот проверяет свои ключи REALITY / TLS.
+            s["v_ChainExitHost"] = p.EffectiveExitHost ?? "";
+            s["v_ChainExitPort"] = p.EffectiveExitPort;
+            s["v_ChainExitUuid"] = p.EffectiveExitUuid ?? "";
+            s["v_ChainExitPublicKey"] = p.EffectiveExitPublicKey ?? "";
+            s["v_ChainExitSni"] = p.EffectiveExitSni ?? "";
+            s["v_ChainExitShortId"] = p.EffectiveExitShortId ?? "";
+            s["v_ChainExitFlow"] = p.EffectiveExitFlow ?? "";
             s["v_AwgConfig"] = p.IsAmneziaWg ? (p.AwgConfig ?? "") : "";
             // Shadowsocks/Outline: без этих трёх ключей фоновая задача не знает ни шифра,
             // ни пароля — профиль импортировался бы, но соединение не поднималось.
