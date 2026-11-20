@@ -145,6 +145,7 @@
     <Compile Include="AppLog.cs" />
     <Compile Include="AmneziaLink.cs" />
     <Compile Include="CountryFlags.cs" />
+    <Compile Include="DeviceHardwareId.cs" />
     <Compile Include="HappCrypto.cs" />
     <Compile Include="IncyCrypto.cs" />
     <Compile Include="VlessProfile.cs" />

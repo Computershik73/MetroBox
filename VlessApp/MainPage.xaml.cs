@@ -1007,6 +1007,17 @@ namespace VlessApp
                     await ShowImportReportAsync(0);
                 }
             }
+            catch (HwidLimitReachedException ex)
+            {
+                StatusText.Text = "Лимит устройств исчерпан";
+                AppLog.W("[ИМПОРТ] " + ex.Message);
+                await new ContentDialog
+                {
+                    Title = "Лимит устройств по подписке",
+                    Content = ex.Message,
+                    CloseButtonText = "Понятно"
+                }.ShowAsync();
+            }
             catch (AmneziaApi.UnsupportedConfigException ex)
             {
                 StatusText.Text = "Конфиг получен, но не разобран.";
@@ -1108,6 +1119,17 @@ namespace VlessApp
                 {
                     StatusText.Text = $"Конфиг получен: {issued.Name} ({ping})";
                 }
+            }
+            catch (HwidLimitReachedException ex)
+            {
+                StatusText.Text = "Лимит устройств исчерпан";
+                AppLog.W("[ИМПОРТ] " + ex.Message);
+                await new ContentDialog
+                {
+                    Title = "Лимит устройств по подписке",
+                    Content = ex.Message,
+                    CloseButtonText = "Понятно"
+                }.ShowAsync();
             }
             catch (AmneziaApi.UnsupportedConfigException ex)
             {
@@ -1563,6 +1585,17 @@ namespace VlessApp
                     StatusText.Text = "Подписка пуста.";
                 }
             }
+            catch (HwidLimitReachedException ex)
+            {
+                StatusText.Text = "Лимит устройств исчерпан";
+                AppLog.W("[ОБНОВЛЕНИЕ] " + ex.Message);
+                await new ContentDialog
+                {
+                    Title = "Лимит устройств по подписке",
+                    Content = ex.Message,
+                    CloseButtonText = "Понятно"
+                }.ShowAsync();
+            }
             catch (Exception ex)
             {
                 StatusText.Text = "Ошибка обновления: " + ex.Message;
@@ -1744,6 +1777,17 @@ namespace VlessApp
                 {
                     StatusText.Text = $"Страна переключена: {chosen.Name} ({ping})";
                 }
+            }
+            catch (HwidLimitReachedException ex)
+            {
+                StatusText.Text = "Лимит устройств исчерпан";
+                AppLog.W("[ИМПОРТ] " + ex.Message);
+                await new ContentDialog
+                {
+                    Title = "Лимит устройств по подписке",
+                    Content = ex.Message,
+                    CloseButtonText = "Понятно"
+                }.ShowAsync();
             }
             catch (AmneziaApi.UnsupportedConfigException ex)
             {

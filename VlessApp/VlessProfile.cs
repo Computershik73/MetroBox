@@ -1072,62 +1072,117 @@ namespace VlessApp
                         // не отличается от зависшего приложения.
                         client.Timeout = TimeSpan.FromSeconds(25);
 
-                        var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
-                        if (!localSettings.Values.ContainsKey("v_DeviceHwid"))
-                        {
-                            string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-                            var rnd = new Random();
-                            var sb = new System.Text.StringBuilder();
-                            for (int i = 0; i < 16; i++)
-                            {
-                                sb.Append(chars[rnd.Next(chars.Length)]);
-                            }
-                            localSettings.Values["v_DeviceHwid"] = sb.ToString();
-                        }
-                        string hwid = localSettings.Values["v_DeviceHwid"] as string;
+                        string hwid = DeviceHardwareId.GetHwid();
 
-                        // Адаптивная ротация User-Agent: сначала OneXray (чистый Base64 без блокировок HWID),
-                        // затем Happ (для провайдеров с HWID-привязкой), затем v2rayN.
+                        // Инъекция заголовка при скачивании подписки для Remnawave v2.7.5+ (CapybaraVPN, НЕВПН).
+                        // User-Agent по умолчанию при обновлении Remnawave-подписок: Happ/3.13.0 или INCY/1.5.0.
                         HttpResponseMessage response = null;
-                        string[] tryUserAgents = new[] { "OneXray/1.5.0", "Happ/3.13.0", "v2rayN/7.25.0" };
+                        string rawContent = null;
+                        string[] tryUserAgents = new[] { "Happ/3.13.0", "INCY/1.5.0", "OneXray/1.5.0", "v2rayN/7.25.0" };
                         Exception lastEx = null;
 
                         foreach (var ua in tryUserAgents)
                         {
                             try
                             {
-                                client.DefaultRequestHeaders.UserAgent.Clear();
-                                client.DefaultRequestHeaders.UserAgent.TryParseAdd(ua);
+                                using (var request = new HttpRequestMessage(HttpMethod.Get, input))
+                                {
+                                    request.Headers.UserAgent.Clear();
+                                    request.Headers.UserAgent.TryParseAdd(ua);
 
-                                if (ua.StartsWith("Happ"))
-                                {
-                                    if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
-                                    client.DefaultRequestHeaders.Add("X-Hwid", hwid);
-                                    if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
-                                    client.DefaultRequestHeaders.Add("X-Device-Os", "Android");
-                                    if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
-                                    client.DefaultRequestHeaders.Add("X-Ver-Os", "14");
-                                    if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
-                                    client.DefaultRequestHeaders.Add("X-Device-Model", "Samsung Galaxy S24");
-                                    if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
-                                    client.DefaultRequestHeaders.Add("X-App-Version", "3.13.0");
-                                }
-                                else
-                                {
-                                    if (client.DefaultRequestHeaders.Contains("X-Hwid")) client.DefaultRequestHeaders.Remove("X-Hwid");
-                                    if (client.DefaultRequestHeaders.Contains("X-Device-Os")) client.DefaultRequestHeaders.Remove("X-Device-Os");
-                                    if (client.DefaultRequestHeaders.Contains("X-Ver-Os")) client.DefaultRequestHeaders.Remove("X-Ver-Os");
-                                    if (client.DefaultRequestHeaders.Contains("X-Device-Model")) client.DefaultRequestHeaders.Remove("X-Device-Model");
-                                    if (client.DefaultRequestHeaders.Contains("X-App-Version")) client.DefaultRequestHeaders.Remove("X-App-Version");
-                                }
+                                    // Заголовок Accept: */* (ни в коем случае не Accept: text/html, иначе вернётся веб-лендинг)
+                                    request.Headers.Accept.Clear();
+                                    request.Headers.Accept.TryParseAdd("*/*");
 
-                                Debug.WriteLine($"[NETWORK] Запрос к {input} с UA={ua}");
-                                var r = await client.GetAsync(input);
-                                if (r.IsSuccessStatusCode)
-                                {
-                                    response = r;
-                                    break;
+                                    // Инъекция аппаратного идентификатора устройства
+                                    request.Headers.TryAddWithoutValidation("X-Hwid", hwid);
+
+                                    if (ua.StartsWith("Happ"))
+                                    {
+                                        request.Headers.TryAddWithoutValidation("X-Device-Os", "Android");
+                                        request.Headers.TryAddWithoutValidation("X-Ver-Os", "14");
+                                        request.Headers.TryAddWithoutValidation("X-Device-Model", "Samsung Galaxy S24");
+                                        request.Headers.TryAddWithoutValidation("X-App-Version", "3.13.0");
+                                    }
+                                    else if (ua.StartsWith("INCY"))
+                                    {
+                                        request.Headers.TryAddWithoutValidation("X-Device-Os", "Android");
+                                        request.Headers.TryAddWithoutValidation("X-Ver-Os", "14");
+                                        request.Headers.TryAddWithoutValidation("X-Device-Model", "Samsung Galaxy S24");
+                                        request.Headers.TryAddWithoutValidation("X-App-Version", "1.5.0");
+                                    }
+
+                                    Debug.WriteLine($"[NETWORK] Запрос к {input} с UA={ua}");
+                                    var r = await client.SendAsync(request);
+
+                                    // Проверка лимита устройств (X-Hwid-Limit: true)
+                                    if (r.Headers.TryGetValues("X-Hwid-Limit", out var limitVals))
+                                    {
+                                        foreach (var v in limitVals)
+                                        {
+                                            if (string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || v == "1")
+                                            {
+                                                AppLog.W("[HWID] Сервер вернул заголовок X-Hwid-Limit: true (исчерпан лимит устройств).");
+                                                throw new HwidLimitReachedException("Лимит устройств по подписке исчерпан. Пожалуйста, отвяжите неиспользуемое устройство в личном кабинете или боте провайдера.");
+                                            }
+                                        }
+                                    }
+
+                                    // Уведомление об успешной регистрации устройства
+                                    if (r.Headers.TryGetValues("X-Hwid-Active", out var activeVals))
+                                    {
+                                        foreach (var v in activeVals)
+                                        {
+                                            if (string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || v == "1")
+                                            {
+                                                AppLog.W("[HWID] Устройство успешно зарегистрировано на сервере (X-Hwid-Active: true).");
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // Если сервер ответил, что HWID не поддерживается для данного UA
+                                    bool hwidNotSupported = false;
+                                    if (r.Headers.TryGetValues("X-Hwid-Not-Supported", out var nsVals))
+                                    {
+                                        foreach (var v in nsVals)
+                                        {
+                                            if (string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || v == "1")
+                                            {
+                                                hwidNotSupported = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if (hwidNotSupported)
+                                    {
+                                        AppLog.W($"[NETWORK] Сервер сообщил X-Hwid-Not-Supported для UA={ua}. Пробуем следующий UA...");
+                                        continue;
+                                    }
+
+                                    if (r.IsSuccessStatusCode)
+                                    {
+                                        var content = await r.Content.ReadAsStringAsync();
+
+                                        // Проверяем, не подменил ли сервер выдачу на предупреждающую заглушку 0.0.0.0:1
+                                        if (content.IndexOf("0.0.0.0:1", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                            (content.IndexOf("не поддерживается", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                             content.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0))
+                                        {
+                                            AppLog.W($"[NETWORK] Сервер вернул предупреждающую заглушку 'не поддерживается' для UA={ua}. Пробуем следующий UA...");
+                                            continue;
+                                        }
+
+                                        response = r;
+                                        rawContent = content;
+                                        break;
+                                    }
                                 }
+                            }
+                            catch (HwidLimitReachedException)
+                            {
+                                throw;
                             }
                             catch (Exception ex)
                             {
@@ -1141,7 +1196,10 @@ namespace VlessApp
                             throw new Exception("Не удалось загрузить подписку (сервер отклонил все варианты User-Agent).");
                         }
 
-                        var rawContent = await response.Content.ReadAsStringAsync();
+                        if (rawContent == null)
+                        {
+                            rawContent = await response.Content.ReadAsStringAsync();
+                        }
 
                         string announce = "";
                         string infoUrl = "";
@@ -1637,19 +1695,23 @@ namespace VlessApp
             }
         }
 
-        // Распознавание предупредительных узлов-заглушек (0.0.0.0, 127.0.0.1, порт 1,
-        // тексты "Приложение не поддерживается", "Клиент устарел" и т.д.), которые коммерческие
-        // панели (Remnawave, 3X-UI) шлют вместо реальных рабочих узлов при несоответствии клиента.
+        // Распознавание предупредительных узлов-заглушек (0.0.0.0:1, 127.0.0.1, нулевой UUID,
+        // тексты "Данное приложение не поддерживается", "Клиент устарел" и т.д.), которые коммерческие
+        // панели (Remnawave, 3X-UI) шлют вместо реальных рабочих узлов при несоответствии клиента или лимитах.
         public static bool IsWarningStub(VlessProfile p)
         {
             if (p == null) return true;
             if (p.Address == "0.0.0.0" || p.Address == "127.0.0.1" || p.Port <= 1) return true;
+            if (string.Equals(p.Uuid, "00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase)) return true;
             if (!string.IsNullOrEmpty(p.Name))
             {
                 if (p.Name.IndexOf("не поддерживается", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("не поддерживаемое", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("не поддерживает", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     p.Name.IndexOf("устарел", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     p.Name.IndexOf("обновите", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    p.Name.IndexOf("не поддерживает json", StringComparison.OrdinalIgnoreCase) >= 0)
+                    p.Name.IndexOf("not supported", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.Name.IndexOf("outdated", StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
             }
             return false;
