@@ -1187,12 +1187,17 @@ namespace VlessApp
                             catch (Exception ex)
                             {
                                 lastEx = ex;
+                                AppLog.W($"[NETWORK] Ошибка при запросе с UA={ua}: {ex.Message}");
                             }
                         }
 
                         if (response == null)
                         {
-                            if (lastEx != null) throw lastEx;
+                            if (lastEx != null)
+                            {
+                                AppLog.W($"[NETWORK] Не удалось загрузить подписку {input}: {lastEx.Message}");
+                                throw new Exception($"Сетевая ошибка при загрузке подписки: {lastEx.Message}", lastEx);
+                            }
                             throw new Exception("Не удалось загрузить подписку (сервер отклонил все варианты User-Agent).");
                         }
 
@@ -1261,6 +1266,7 @@ namespace VlessApp
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"[NETWORK ERROR] Ошибка сети: {ex.Message}");
+                    AppLog.W($"[NETWORK ERROR] {ex.Message}");
                     throw;
                 }
             }

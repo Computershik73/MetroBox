@@ -697,11 +697,26 @@ namespace VlessApp
                 else
                 {
                     StatusText.Text = "Буфер обмена пуст";
+                    var emptyDialog = new ContentDialog
+                    {
+                        Title = "Буфер обмена пуст",
+                        Content = "В буфере обмена не найдено текста или ссылок для импорта.",
+                        CloseButtonText = "ОК"
+                    };
+                    await emptyDialog.ShowAsync();
                 }
             }
             catch (Exception ex)
             {
+                AppLog.W("[БУФЕР] Ошибка чтения буфера обмена: " + ex.Message);
                 StatusText.Text = "Ошибка импорта: " + ex.Message;
+                var errDialog = new ContentDialog
+                {
+                    Title = "Ошибка буфера обмена",
+                    Content = $"Не удалось прочитать буфер обмена:\n\n{ex.Message}",
+                    CloseButtonText = "ОК"
+                };
+                await errDialog.ShowAsync();
             }
         }
 
@@ -774,7 +789,15 @@ namespace VlessApp
             }
             catch (Exception ex)
             {
+                AppLog.W("[QR] Ошибка сканирования: " + ex.Message);
                 StatusText.Text = "Ошибка сканирования: " + ex.Message;
+                var errDialog = new ContentDialog
+                {
+                    Title = "Ошибка сканирования",
+                    Content = $"Не удалось выполнить сканирование QR-кода:\n\n{ex.Message}",
+                    CloseButtonText = "ОК"
+                };
+                await errDialog.ShowAsync();
             }
         }
 
@@ -1003,8 +1026,23 @@ namespace VlessApp
                 }
                 else
                 {
+                    AppLog.W("[ИМПОРТ] В полученных данных не найдено профилей.");
                     StatusText.Text = "В импортированных данных не найдено профилей";
-                    await ShowImportReportAsync(0);
+                    var rep = VlessProfile.LastImport;
+                    if (rep != null && (rep.Skipped.Count > 0 || rep.Warnings.Count > 0))
+                    {
+                        await ShowImportReportAsync(0);
+                    }
+                    else
+                    {
+                        var emptyDialog = new ContentDialog
+                        {
+                            Title = "Профили не найдены",
+                            Content = "По данной ссылке или QR-коду не найдено ни одного поддерживаемого профиля/сервера.",
+                            CloseButtonText = "ОК"
+                        };
+                        await emptyDialog.ShowAsync();
+                    }
                 }
             }
             catch (HwidLimitReachedException ex)
@@ -1025,10 +1063,24 @@ namespace VlessApp
             }
             catch (Exception ex)
             {
+                AppLog.W("[ОШИБКА ИМПОРТА] " + ex.Message);
                 StatusText.Text = "Ошибка импорта: " + ex.Message;
                 // Для ссылок Amnezia показываем лог обмена: причина отказа
                 // почти всегда в теле ответа шлюза, а не в тексте исключения.
-                if (AmneziaLink.IsAmneziaLink(text)) await ShowAmneziaErrorAsync(ex);
+                if (AmneziaLink.IsAmneziaLink(text))
+                {
+                    await ShowAmneziaErrorAsync(ex);
+                }
+                else
+                {
+                    var dlg = new ContentDialog
+                    {
+                        Title = "Ошибка импорта",
+                        Content = $"Не удалось загрузить или разобрать конфигурацию:\n\n{ex.Message}\n\nУбедитесь, что телефон подключён к сети (Wi-Fi или сотовые данные) и сервер подписки доступен.",
+                        CloseButtonText = "ОК"
+                    };
+                    await dlg.ShowAsync();
+                }
             }
             finally
             {
