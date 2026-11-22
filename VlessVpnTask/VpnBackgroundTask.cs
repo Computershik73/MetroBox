@@ -9,8 +9,6 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
-        
-
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -122,7 +120,7 @@ namespace VlessVpnTask
                 // Пока процесс дозакрывался, система пришла с новым подключением — в тот
                 // же процесс. Выход сейчас убил бы свежий туннель на середине подъёма.
                 // Туннель закрыли приложением и сразу открыли снова — ровно так и бывает.
-                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation)
+                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation || _plugin.IsConnected)
                 {
                     try { FileLog.Important("[BG TASK] TearDown отменён: пока процесс закрывался, пришло новое подключение."); } catch { }
 
@@ -142,6 +140,8 @@ namespace VlessVpnTask
                 {
                     try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
                 }
+
+
             });
         }
     }

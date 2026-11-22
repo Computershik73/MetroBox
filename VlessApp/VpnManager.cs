@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using Windows.Networking;
 using Windows.Networking.Vpn;
 using Windows.ApplicationModel;
 
@@ -8,7 +9,7 @@ namespace VlessApp
 {
     public class VpnManager
     {
-        public const string ProfileName = "VLESS Client";
+        public const string ProfileName = "MetroBox";
 
         public async Task ConnectVlessAsync(VlessProfile p)
         {
@@ -83,6 +84,13 @@ namespace VlessApp
             // Имя нужно фоновой задаче только для живой плитки — на подключение не влияет.
             s["v_Name"] = p.Name ?? "";
             s["v_Address"] = p.Address ?? "";
+            if (!string.IsNullOrEmpty(p.Address) && System.Net.IPAddress.TryParse(p.Address, out var ip))
+            {
+                s["v_ServerIp"] = ip.ToString();
+                s["v_ServerIps"] = ip.ToString();
+                s["v_LastServerIp"] = ip.ToString();
+                s["v_LastServerIpFor"] = p.Address;
+            }
             s["v_Port"] = p.Port;
             s["v_Uuid"] = p.Uuid ?? "";
             s["v_Type"] = p.Type ?? "tcp";
@@ -139,51 +147,102 @@ namespace VlessApp
 
         public async Task<IVpnProfile> FindOwnProfileAsync()
         {
-            string fam = Package.Current.Id.FamilyName;
             try
             {
                 var agent = new VpnManagementAgent();
                 var profiles = await agent.GetProfilesAsync();
 
-               /* Debug.WriteLine("=== [DIAGNOSTIC] НАЧАЛО СПИСКА VPN-ПРОФИЛЕЙ СИСТЕМЫ ===");
-                Debug.WriteLine($"Текущий PFN приложения (Семейство пакета): '{fam}'");
-                Debug.WriteLine($"Всего профилей найдено в ОС: {profiles.Count}");
+                AppLog.W($"[VPN MGR] Всего профилей в ОС: {profiles.Count}");
+
+                IVpnProfile candidate = null;
 
                 foreach (var pr in profiles)
                 {
-                    Debug.WriteLine($"[PROFILE] Имя профиля: '{pr.ProfileName}'");
+                    VpnManagementConnectionStatus status = VpnManagementConnectionStatus.Disconnected;
                     if (pr is VpnPlugInProfile plug)
                     {
-                        //Debug.WriteLine($"  Тип профиля: VpnPlugInProfile (Кастомный плагин)");
-                        Debug.WriteLine($"  PFN плагина в профиле: '{plug.VpnPluginPackageFamilyName}'");
-                        Debug.WriteLine($"  Совпадение PFN с приложением: {string.Equals(plug.VpnPluginPackageFamilyName, fam, StringComparison.OrdinalIgnoreCase)}");
+                        try { status = plug.ConnectionStatus; } catch { }
+                        AppLog.W($"[VPN MGR] Профиль '{pr.ProfileName}', статус: {status}, PFN плагина: '{plug.VpnPluginPackageFamilyName}'");
                     }
                     else
                     {
-                        Debug.WriteLine($"  Тип профиля: {pr.GetType().Name} (Встроенный L2TP/IKEv2/PPTP)");
+                        AppLog.W($"[VPN MGR] Профиль '{pr.ProfileName}' (тип {pr.GetType().Name})");
                     }
-                }
-                Debug.WriteLine("=== [DIAGNOSTIC] КОНЕЦ СПИСКА VPN-ПРОФИЛЕЙ СИСТЕМЫ ===");*/
 
-                foreach (var pr in profiles)
-                {
-                    if (pr is VpnPlugInProfile plug)
+                    bool nameMatch = string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
+
+                    if (nameMatch)
                     {
-                        // СИСТЕМНЫЙ ФИКС: Если PFN пустой (баг ручного создания профиля в Windows 10 Mobile) 
-                        // или совпадает с нашим текущим PFN — это гарантированно наш рабочий профиль!
-                        if (string.IsNullOrEmpty(plug.VpnPluginPackageFamilyName) ||
-                            string.Equals(plug.VpnPluginPackageFamilyName, fam, StringComparison.OrdinalIgnoreCase))
+                        if (status == VpnManagementConnectionStatus.Connected)
                         {
                             return pr;
                         }
+                        candidate = pr;
                     }
                 }
+
+                if (candidate != null) return candidate;
+
+                if (profiles.Count > 0) return profiles[0];
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"[PROFILE] GetProfilesAsync failed: {ex.Message}");
+                AppLog.W($"[VPN MGR] GetProfilesAsync failed: {ex.Message}");
             }
             return null;
+        }
+
+        // Сохранение учетных данных в хранилище Windows Credential Manager (PasswordVault),
+        // чтобы системный диалер RAS и параметры ОС не требовали ввода данных и не выдавали ошибку 691.
+        public static void EnsurePasswordVaultCredentials()
+        {
+            try
+            {
+                var vault = new Windows.Security.Credentials.PasswordVault();
+                try
+                {
+                    vault.Retrieve(ProfileName, "vpn");
+                }
+                catch
+                {
+                    vault.Add(new Windows.Security.Credentials.PasswordCredential(ProfileName, "vpn", "vpn"));
+                    AppLog.W("[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для обхода RAS 691");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] Предупреждение PasswordVault: {ex.Message}");
+            }
+        }
+
+        // Удаление битого приватного rasphone.pbk из LocalFolder (созданного некорректным AddProfileFromObjectAsync),
+        // чтобы приложение и система использовали единый чистый системный профиль.
+        public static void CleanupBrokenPrivatePhonebook()
+        {
+            try
+            {
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
+                if (System.IO.File.Exists(pbkPath))
+                {
+                    System.IO.File.Delete(pbkPath);
+                    AppLog.W("[VPN MGR] Удален поврежденный приватный rasphone.pbk из LocalState");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] CleanupBrokenPrivatePhonebook: {ex.Message}");
+            }
+        }
+
+        public async Task<IVpnProfile> EnsureOwnProfileAsync()
+        {
+            CleanupBrokenPrivatePhonebook();
+            EnsurePasswordVaultCredentials();
+
+            return await FindOwnProfileAsync();
         }
     }
 }

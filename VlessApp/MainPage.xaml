@@ -30,35 +30,33 @@
                 <GradientStop Color="#0F1326" Offset="1.0"/>
             </LinearGradientBrush>
 
-            <!-- Шаблон карточки группы серверов (Happ Style) -->
+            <!-- Шаблон карточки группы серверов (Happ Style, оптимизирован под ItemsStackPanel) -->
             <Style TargetType="GroupItem">
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="GroupItem">
-                            <Border Background="#12182D" CornerRadius="16" BorderBrush="#1F264E" BorderThickness="1" Margin="16,0,16,16" Padding="0,0,0,10">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
+                            <Border Background="#12182D" CornerRadius="12" BorderBrush="#1F264E" BorderThickness="1" Margin="16,0,16,16" Padding="0,0,0,6">
+                                <StackPanel>
                                     <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"/>
-                                    <ItemsPresenter Grid.Row="1"/>
-                                </Grid>
+                                    <ItemsPresenter/>
+                                </StackPanel>
                             </Border>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
             </Style>
 
-            <!-- Кастомный стиль круглой неоновой кнопки подключения -->
+            <!-- Кастомный стиль круглой неоновой кнопки подключения с фиксированными габаритами -->
             <Style x:Key="ConnectButtonStyle" TargetType="Button">
                 <Setter Property="Padding" Value="0"/>
                 <Setter Property="HorizontalAlignment" Value="Center"/>
                 <Setter Property="VerticalAlignment" Value="Center"/>
+                <Setter Property="Width" Value="150"/>
+                <Setter Property="Height" Value="150"/>
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="Button">
-                            <Grid x:Name="RootGrid" Background="Transparent">
+                            <Grid x:Name="RootGrid" Width="150" Height="150" Background="Transparent">
                                 <Border x:Name="BackgroundBorder" 
                                     Background="{TemplateBinding Background}" 
                                     BorderBrush="{TemplateBinding BorderBrush}" 
@@ -66,7 +64,7 @@
                                     CornerRadius="75"
                                     Width="150" Height="150"/>
 
-                                <Border Margin="1.5" BorderBrush="#FFFFFF" BorderThickness="1" Opacity="0.12" CornerRadius="73.5" Width="147" Height="147"/>
+                                <Border Margin="1.5" BorderBrush="#253565" BorderThickness="1" CornerRadius="73.5" Width="147" Height="147"/>
 
                                 <ContentPresenter x:Name="ContentPresenter" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
                             </Grid>
@@ -77,7 +75,7 @@
         </Page.Resources>
 
         <!-- Тёмно-синий градиент подложки -->
-        <Grid>
+        <Grid x:Name="MainRootGrid">
             <Grid.Background>
                 <LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1">
                     <GradientStop Color="#090D1C" Offset="0.0"/>
@@ -117,15 +115,15 @@
             </Grid>
 
             <!-- ОБЪЕМНАЯ СФЕРА ПОДКЛЮЧЕНИЯ С НЕОНОВЫМИ КОЛЬЦАМИ -->
-            <Grid Grid.Row="1" Height="240" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,10,0,10">
-                <Border x:Name="GlowRing1" Width="220" Height="220" CornerRadius="110" BorderThickness="1" BorderBrush="#2563EB" Opacity="0.1"/>
-                <Border x:Name="GlowRing2" Width="190" Height="190" CornerRadius="95" BorderThickness="1.5" BorderBrush="#2563EB" Opacity="0.25"/>
+            <Grid x:Name="ButtonContainer" Grid.Row="1" Width="150" Height="150" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,10,0,10">
+                <Border x:Name="GlowRing1" Width="220" Height="220" CornerRadius="110" BorderThickness="1" BorderBrush="#2563EB" Opacity="0.1" Visibility="Collapsed"/>
+                <Border x:Name="GlowRing2" Width="190" Height="190" CornerRadius="95" BorderThickness="1.5" BorderBrush="#2563EB" Opacity="0.25" Visibility="Collapsed"/>
 
                 <Button x:Name="ConnectBtn" Click="ConnectBtn_Click" Width="150" Height="150" Style="{StaticResource ConnectButtonStyle}" Background="{StaticResource ButtonGlowDisconnected}" BorderBrush="#2563EB" BorderThickness="3">
                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                         <FontIcon x:Name="PowerIcon" Glyph="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="36" Foreground="White" Margin="0,0,0,8"/>
                         <TextBlock x:Name="ConnectBtnText" Text="ПОДКЛЮЧИТЬ" FontSize="11" FontWeight="Bold" Foreground="#9CA3AF" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="TimeText" Text="00:00:00" FontSize="12" FontWeight="SemiBold" Foreground="#2563EB" HorizontalAlignment="Center" Margin="0,4,0,0" Visibility="Collapsed"/>
+                        <TextBlock x:Name="TimeText" Text="00:00:00" FontSize="12" FontWeight="SemiBold" Foreground="#2563EB" Width="90" Height="18" TextAlignment="Center" HorizontalAlignment="Center" Margin="0,4,0,0" Visibility="Collapsed"/>
                     </StackPanel>
                 </Button>
             </Grid>
@@ -145,13 +143,13 @@
                 <TextBlock x:Name="TransportWarnText" Grid.Row="1" Visibility="Collapsed" FontSize="11" Foreground="#F59E0B" LineHeight="15" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </Grid>
 
-            <!-- СПИСОК СЕРВЕРОВ (ShowsScrollingPlaceholders=False выключает пустые блоки при скролле) -->
+            <!-- СПИСОК СЕРВЕРОВ (Оптимизировано под Adreno 305 / W10M: ShowsScrollingPlaceholders=False, CacheLength=2.0) -->
             <ListView Grid.Row="3" x:Name="ProfilesList" Margin="0,0,0,0" SelectionMode="None"
                   ShowsScrollingPlaceholders="False"
                   ItemsSource="{Binding Source={StaticResource GroupedProfilesCVS}}">
                 <ListView.ItemsPanel>
                     <ItemsPanelTemplate>
-                        <ItemsStackPanel AreStickyGroupHeadersEnabled="False"/>
+                        <ItemsStackPanel AreStickyGroupHeadersEnabled="False" CacheLength="2.0"/>
                     </ItemsPanelTemplate>
                 </ListView.ItemsPanel>
 
@@ -222,112 +220,65 @@
                     </GroupStyle>
                 </ListView.GroupStyle>
 
-                <!-- Шаблон ячейки сервера (Полностью переведен на x:Bind для мгновенного рендеринга при скролле) -->
+                <!-- Шаблон ячейки сервера (Чистая монолитная структура без лишних слоев композитора, контекстное меню по долгому нажатию) -->
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:VlessProfile">
-                        <Border BorderBrush="#1F264E" BorderThickness="0,0,0,0.5">
-                            <Grid Background="#12182D" ManipulationMode="TranslateX,System" ManipulationDelta="Item_ManipulationDelta" ManipulationCompleted="Item_ManipulationCompleted">
+                        <Border BorderBrush="#1F264E" BorderThickness="0,0,0,1" Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}">
+                            <Grid Tapped="Item_Tapped" IsTapEnabled="True" Holding="Item_Holding" RightTapped="Item_RightTapped" Background="Transparent" Padding="16,10,16,10">
+                                <FlyoutBase.AttachedFlyout>
+                                    <MenuFlyout MenuFlyoutPresenterStyle="{StaticResource AddMenuFlyoutPresenterStyle}">
+                                        <MenuFlyoutItem Text="⚡  Проверить пинг" Click="ContextPing_Click" Tag="{x:Bind}"/>
+                                        <MenuFlyoutItem Text="🔗  Поделиться (URL)" Click="ContextShareUrl_Click" Tag="{x:Bind}"/>
+                                        <MenuFlyoutItem Text="📷  Поделиться (QR)" Click="ContextShareQr_Click" Tag="{x:Bind}"/>
+                                        <MenuFlyoutItem Text="📋  Поделиться (JSON)" Click="ContextShareJson_Click" Tag="{x:Bind}"/>
+                                        <MenuFlyoutSeparator/>
+                                        <MenuFlyoutItem Text="🗑  Удалить сервер" Click="ContextDelete_Click" Tag="{x:Bind}" Foreground="#EF4444"/>
+                                    </MenuFlyout>
+                                </FlyoutBase.AttachedFlyout>
 
-                                <!-- Левая панель действий (Ping / Share) -->
-                                <Grid Width="120" Height="56" HorizontalAlignment="Left" Background="#1D2447">
-                                    <StackPanel Orientation="Horizontal" Visibility="{x:Bind DefaultActionsVisibility, Mode=OneWay}">
-                                        <Button Width="60" Height="56" Background="#10B981" BorderThickness="0" Padding="0" Click="SwipePing_Click" Tag="{x:Bind}">
-                                            <FontIcon Glyph="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Button>
-                                        <Button Width="60" Height="56" Background="#6366F1" BorderThickness="0" Padding="0" Click="SwipeShare_Click" Tag="{x:Bind}">
-                                            <FontIcon Glyph="&#xE72D;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Button>
-                                    </StackPanel>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
 
-                                    <Grid Visibility="{x:Bind SharePanelVisibility, Mode=OneWay}">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="40"/>
-                                            <ColumnDefinition Width="40"/>
-                                            <ColumnDefinition Width="40"/>
-                                        </Grid.ColumnDefinitions>
+                                <Border Width="4" Background="White" HorizontalAlignment="Left" VerticalAlignment="Stretch" Margin="-16,-10,0,-10" Visibility="{x:Bind SelectedIndicatorVisibility, Mode=OneWay}"/>
 
-                                        <Button Grid.Column="0" Width="40" Height="56" Click="ShareUrl_Click" Background="#4F46E5" BorderThickness="0" Padding="0">
-                                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                <FontIcon Glyph="&#xE71B;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="White"/>
-                                                <TextBlock Text="URL" FontSize="8" Foreground="White" Margin="0,2,0,0"/>
-                                            </StackPanel>
-                                        </Button>
+                                <!-- Флаг страны: скруглённый прямоугольник во всю плитку -->
+                                <Grid Grid.Column="0" Width="40" Height="28" VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <Border CornerRadius="5" BorderBrush="#303649" BorderThickness="1"
+                                            Visibility="{x:Bind FlagVisibility, Mode=OneWay}">
+                                        <Border.Background>
+                                            <ImageBrush ImageSource="{x:Bind FlagImage, Mode=OneWay}" Stretch="UniformToFill"/>
+                                        </Border.Background>
+                                    </Border>
 
-                                        <Button Grid.Column="1" Width="40" Height="56" Click="ShareQr_Click" Background="#4F46E5" BorderThickness="1,0,1,0" BorderBrush="#1F264E" Padding="0">
-                                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                <FontIcon Glyph="&#xE943;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="White"/>
-                                                <TextBlock Text="QR" FontSize="8" Foreground="White" Margin="0,2,0,0"/>
-                                            </StackPanel>
-                                        </Button>
+                                    <!-- Страна известна, но флага в наборе нет -->
+                                    <Border CornerRadius="5" Background="#1D2447"
+                                            Visibility="{x:Bind CodeBadgeVisibility, Mode=OneWay}">
+                                        <TextBlock Text="{x:Bind CountryBadgeText, Mode=OneWay}"
+                                                   FontSize="13" FontWeight="Bold" Foreground="#3B82F6"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
 
-                                        <Button Grid.Column="2" Width="40" Height="56" Click="ShareJson_Click" Background="#4F46E5" BorderThickness="0" Padding="0">
-                                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                                <FontIcon Glyph="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="White"/>
-                                                <TextBlock Text="JSON" FontSize="8" Foreground="White" Margin="0,2,0,0"/>
-                                            </StackPanel>
-                                        </Button>
-                                    </Grid>
+                                    <!-- Страна не определилась -->
+                                    <Border CornerRadius="5" Background="#1D2447"
+                                            Visibility="{x:Bind GlobeVisibility, Mode=OneWay}">
+                                        <FontIcon Glyph="&#xE12B;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                  Foreground="#3B82F6" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                    </Border>
                                 </Grid>
 
-                                <!-- ПРАВАЯ ПАНЕЛЬ ДЕЙСТВИЙ: Кнопка удаления -->
-                                <Grid Width="60" Height="56" HorizontalAlignment="Right" Background="#EF4444" Tapped="SwipeDelete_Click" Tag="{x:Bind}" IsTapEnabled="True">
-                                    <FontIcon Glyph="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Grid>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,10,0">
+                                    <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}" FontSize="17" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontSize="11" Foreground="#6B7280" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                                </StackPanel>
 
-                                <!-- Верхний слой: Сам элемент сервера -->
-                                <Grid x:Name="ContentGrid" Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}" Tapped="Item_Tapped" IsTapEnabled="True" Loaded="ContentGrid_Loaded">
-                                    <Grid.RenderTransform>
-                                        <TranslateTransform x:Name="Translation"/>
-                                    </Grid.RenderTransform>
-
-                                    <Border Width="4" Background="White" HorizontalAlignment="Left" VerticalAlignment="Stretch" Visibility="{x:Bind SelectedIndicatorVisibility, Mode=OneWay}"/>
-
-                                    <Grid Padding="16,10,16,10">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <!-- Флаг страны: скруглённый прямоугольник во всю плитку.
-                                             Рисуется в CountryFlags попиксельно — эмодзи-флаги
-                                             Windows показывает буквенным квадратиком, а не флагом. -->
-                                        <Grid Grid.Column="0" Width="40" Height="28" VerticalAlignment="Center" Margin="0,0,14,0">
-                                            <Border CornerRadius="5" BorderBrush="#2AFFFFFF" BorderThickness="1"
-                                                    Visibility="{x:Bind FlagVisibility, Mode=OneWay}">
-                                                <Border.Background>
-                                                    <ImageBrush ImageSource="{x:Bind FlagImage, Mode=OneWay}" Stretch="UniformToFill"/>
-                                                </Border.Background>
-                                            </Border>
-
-                                            <!-- Страна известна, но флага в наборе нет -->
-                                            <Border CornerRadius="5" Background="#1D2447"
-                                                    Visibility="{x:Bind CodeBadgeVisibility, Mode=OneWay}">
-                                                <TextBlock Text="{x:Bind CountryBadgeText, Mode=OneWay}"
-                                                           FontSize="13" FontWeight="Bold" Foreground="#3B82F6"
-                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                            </Border>
-
-                                            <!-- Страна не определилась -->
-                                            <Border CornerRadius="5" Background="#1D2447"
-                                                    Visibility="{x:Bind GlobeVisibility, Mode=OneWay}">
-                                                <FontIcon Glyph="&#xE12B;" FontFamily="Segoe MDL2 Assets" FontSize="16"
-                                                          Foreground="#3B82F6" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                                            </Border>
-                                        </Grid>
-
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,10,0">
-                                            <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}" FontSize="17" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontSize="11" Foreground="#6B7280" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" MaxLines="1"/>
-                                        </StackPanel>
-
-                                        <!-- Правая колонка: Вывод пинга и шеврон -->
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind CleanPingText, Mode=OneWay}" FontSize="12" Foreground="{x:Bind PingBrush, Mode=OneWay}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                            <FontIcon Glyph="&#xE00F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#4B5563" VerticalAlignment="Center"/>
-                                        </StackPanel>
-                                    </Grid>
-                                </Grid>
+                                <!-- Правая колонка: Вывод пинга и шеврон -->
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="{x:Bind CleanPingText, Mode=OneWay}" FontSize="12" Foreground="{x:Bind PingBrush, Mode=OneWay}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <FontIcon Glyph="&#xE00F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#4B5563" VerticalAlignment="Center"/>
+                                </StackPanel>
                             </Grid>
                         </Border>
                     </DataTemplate>
@@ -362,11 +313,11 @@
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->
                             <TextBlock Text="MetroBox" FontSize="28" FontWeight="Bold" Foreground="#3B82F6" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Версия 1.4.0.4" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
+                            <TextBlock x:Name="AppVersionText" Text="Версия 1.5.0" FontSize="12" Foreground="#6B7280" HorizontalAlignment="Center" Margin="0,4,0,20"/>
 
                             <!-- Описание -->
                             <TextBlock Text="Современный клиент VLESS VPN для устройств под управлением Windows 10 Mobile." 
-                                   FontSize="14" Foreground="#E2E8F0" TextWrapping="Wrap" LineHeight="20" Margin="0,0,0,24"/>
+                                   FontSize="14" Foreground="#E2E8F0" TextWrapping="Wrap" LineHeight="20" Margin="0,0,0,20"/>
 
                             <!-- Раздел ссылок -->
                             <TextBlock Text="Связь и поддержка:" FontSize="14" FontWeight="Bold" Foreground="White" Margin="0,0,0,12"/>
