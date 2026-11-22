@@ -301,6 +301,16 @@ namespace VlessApp
 
             await LoadProfilesAsync();
             await CheckAndAutoUpdateSubscriptionsAsync();
+
+            try
+            {
+                bool autoProxy = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_ProxySharingEnabled"] as bool?) ?? false;
+                if (autoProxy)
+                {
+                    ProxySharingToggle.IsOn = true;
+                }
+            }
+            catch { }
         }
 
         private void Timer_Tick(object sender, object e)
@@ -2661,12 +2671,71 @@ namespace VlessApp
 
         private void SettingsBtn_Click(object sender, RoutedEventArgs e)
         {
+            UpdateProxyInfoUI();
             AboutPageGrid.Visibility = Visibility.Visible;
         }
 
         private void AboutBackBtn_Click(object sender, RoutedEventArgs e)
         {
             AboutPageGrid.Visibility = Visibility.Collapsed;
+        }
+
+        private void UpdateProxyInfoUI()
+        {
+            try
+            {
+                if (ProxySharingServer.IsRunning)
+                {
+                    ProxyInfoPanel.Visibility = Visibility.Visible;
+                    var ips = ProxySharingServer.GetLocalIpAddresses();
+                    string primaryIp = ips.Count > 0 ? ips[0] : "192.168.137.1";
+                    ProxyHostPortText.Text = $"Прокси: {primaryIp}:{ProxySharingServer.CurrentPort} (HTTP / SOCKS5)";
+
+                    if (ips.Count > 0)
+                    {
+                        ProxyIpHintText.Text = $"Доступные IP: {string.Join(", ", ips)}\n(при хот-споте обычно: 192.168.137.1)";
+                    }
+                    else
+                    {
+                        ProxyIpHintText.Text = "Включите Мобильный хот-спот или подключитесь к Wi-Fi для раздачи.";
+                    }
+                }
+                else
+                {
+                    ProxyInfoPanel.Visibility = Visibility.Collapsed;
+                }
+            }
+            catch { }
+        }
+
+        private async void ProxySharingToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            var toggle = sender as ToggleSwitch;
+            if (toggle == null) return;
+
+            var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
+
+            if (toggle.IsOn)
+            {
+                bool started = await ProxySharingServer.StartAsync(ProxySharingServer.DefaultPort);
+                if (started)
+                {
+                    localSettings.Values["v_ProxySharingEnabled"] = true;
+                    UpdateProxyInfoUI();
+                }
+                else
+                {
+                    toggle.IsOn = false;
+                    localSettings.Values["v_ProxySharingEnabled"] = false;
+                    ProxyInfoPanel.Visibility = Visibility.Collapsed;
+                }
+            }
+            else
+            {
+                await ProxySharingServer.StopAsync();
+                localSettings.Values["v_ProxySharingEnabled"] = false;
+                ProxyInfoPanel.Visibility = Visibility.Collapsed;
+            }
         }
 
         // ===================== отправка журналов =====================

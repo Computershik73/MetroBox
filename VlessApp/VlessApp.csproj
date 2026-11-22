@@ -150,6 +150,7 @@
     <Compile Include="IncyCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
+    <Compile Include="ProxySharingServer.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
