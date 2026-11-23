@@ -902,168 +902,92 @@ namespace VlessApp
                     AppLog.W($"[VPN MGR] Предварительный резолв не удался: {rx.Message}");
                 }
 
-                // Безусловно освобождаем транспортные порты и зависшие сессии RasMan перед новым подключением
-                try
+                // Если профиль уже активен в системе (например, запущен из шторки/параметров),
+                // синхронизируем UI вместо принудительного разрыва и повторного цикла
+                if (mine is VpnPlugInProfile activePlug)
                 {
-                    bool wasActive = await ForceDisconnectActiveProfileAsync();
-                    if (wasActive)
+                    try
                     {
-                        AppLog.W("[VPN MGR] Ожидание завершения предыдущей сессии RasMan (2.5 сек)...");
-                        await Task.Delay(2500);
+                        if (activePlug.ConnectionStatus == VpnManagementConnectionStatus.Connected)
+                        {
+                            AppLog.W("[VPN MGR] Профиль уже подключен в системе — обновляем UI.");
+                            _isConnected = true;
+                            UpdateUiForConnectedState();
+                            return;
+                        }
                     }
-                    else
-                    {
-                        await Task.Delay(300);
-                    }
+                    catch { }
                 }
-                catch { }
 
                 try
                 {
                     VpnManager.PatchLocalRasphonePbk();
                     VpnManager.EnsurePasswordVaultCredentials();
 
-                    var kind = await VpnManager.GetProfileKindAsync();
+                    StatusText.Text = "Запуск сетевого туннеля...";
+                    AppLog.W($"[VPN MGR] Запуск профиля '{mine.ProfileName}' через ConnectProfileAsync...");
 
-                    if (kind == VpnProfileKind.LocalHidden)
+                    var agent = new Windows.Networking.Vpn.VpnManagementAgent();
+                    var connectStatus = await agent.ConnectProfileAsync(mine);
+                    AppLog.W($"[VPN MGR] Результат ConnectProfileAsync: {connectStatus}");
+
+                    if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
                     {
-                        StatusText.Text = "Запуск сетевого туннеля...";
-                        AppLog.W("[VPN MGR] Запуск локального профиля через ConnectProfileAsync...");
-
-                        var agent = new Windows.Networking.Vpn.VpnManagementAgent();
-                        var connectStatus = await agent.ConnectProfileAsync(mine);
-                        AppLog.W($"[VPN MGR] Результат ConnectProfileAsync: {connectStatus}");
-
-                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                        AppLog.W("[VPN MGR] ConnectProfileAsync вернул ошибку, пробуем ConnectProfileWithPasswordCredentialAsync...");
+                        try
                         {
-                            AppLog.W("[VPN MGR] ConnectProfileAsync вернул ошибку, пробуем ConnectProfileWithPasswordCredentialAsync...");
-                            try
-                            {
-                                var cred = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
-                                connectStatus = await agent.ConnectProfileWithPasswordCredentialAsync(mine, cred);
-                                AppLog.W($"[VPN MGR] Результат ConnectProfileWithPasswordCredentialAsync: {connectStatus}");
-                            }
-                            catch (Exception cx)
-                            {
-                                AppLog.W($"[VPN MGR] Ошибка при передаче учетных данных: {cx.Message}");
-                            }
+                            var cred = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
+                            connectStatus = await agent.ConnectProfileWithPasswordCredentialAsync(mine, cred);
+                            AppLog.W($"[VPN MGR] Результат ConnectProfileWithPasswordCredentialAsync: {connectStatus}");
                         }
-
-                        // Если транспорт занят (Other / AlreadyInUse) — пересоздаём профиль и делаем один retry
-                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                        catch (Exception cx)
                         {
-                            AppLog.W($"[VPN MGR] ConnectProfileAsync вернул {connectStatus} — пересоздаём скрытый профиль и пробуем ещё раз...");
-                            StatusText.Text = "Пересборка VPN-профиля...";
-                            try
-                            {
-                                await VpnManager.DeleteHiddenProfileAsync();
-                                await Task.Delay(800);
-                                bool recreated = await VpnManager.CreateHiddenProfileAsync();
-                                AppLog.W($"[VPN MGR] Пересоздание профиля: {(recreated ? "Ok" : "Fail")}");
-                                if (recreated)
-                                {
-                                    await Task.Delay(1500); // даём RasMan инициализировать транспорт
-                                    VpnManager.PatchLocalRasphonePbk();
-                                    mine = await _vpnManager.FindOwnProfileAsync();
-                                    _cachedProfile = mine;
-                                    if (mine != null)
-                                    {
-                                        StatusText.Text = "Запуск сетевого туннеля (повтор)...";
-                                        AppLog.W("[VPN MGR] Retry ConnectProfileAsync после пересоздания...");
-                                        var agent2 = new Windows.Networking.Vpn.VpnManagementAgent();
-                                        connectStatus = await agent2.ConnectProfileAsync(mine);
-                                        AppLog.W($"[VPN MGR] Retry ConnectProfileAsync: {connectStatus}");
-                                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
-                                        {
-                                            try
-                                            {
-                                                var cred2 = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
-                                                connectStatus = await agent2.ConnectProfileWithPasswordCredentialAsync(mine, cred2);
-                                                AppLog.W($"[VPN MGR] Retry ConnectProfileWithPasswordCredentialAsync: {connectStatus}");
-                                            }
-                                            catch (Exception cx2)
-                                            {
-                                                AppLog.W($"[VPN MGR] Ошибка при retry с учётными данными: {cx2.Message}");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception rex)
-                            {
-                                AppLog.W($"[VPN MGR] Ошибка при пересоздании профиля: {rex.Message}");
-                            }
+                            AppLog.W($"[VPN MGR] Ошибка при передаче учетных данных: {cx.Message}");
                         }
+                    }
 
-                        if (connectStatus == Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                    if (connectStatus == Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                    {
+                        for (int w = 0; w < 15; w++)
                         {
-                            for (int w = 0; w < 15; w++)
+                            await Task.Delay(400);
+                            bool tunUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+                            if (tunUp || IsVpnInterfaceActive())
                             {
-                                await Task.Delay(400);
-                                bool tunUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
-                                if (tunUp || IsVpnInterfaceActive())
-                                {
-                                    await CheckVpnStatusAsync();
-                                    return;
-                                }
+                                await CheckVpnStatusAsync();
+                                return;
                             }
-                        }
-                        else
-                        {
-                            // Не переходим тихо в настройки — показываем информативный диалог
-                            AppLog.W($"[VPN MGR] Не удалось активировать VPN-профиль ({connectStatus}) даже после пересоздания.");
-                            ResetToDisconnectedUI();
-                            var failDialog = new ContentDialog
-                            {
-                                Title = "Не удалось подключиться",
-                                Content = $"VPN-профиль не удалось активировать (ошибка: {connectStatus}).\n\n" +
-                                          "Возможные причины:\n" +
-                                          "• RasMan не освободил транспорт — перезагрузите телефон.\n" +
-                                          "• Профиль не зарегистрирован — зайдите в Настройки > Пересоздать скрытый профиль.\n\n" +
-                                          "Если перезагрузка не помогает — удалите все VPN-профили из системных параметров.",
-                                PrimaryButtonText = "Открыть параметры VPN",
-                                CloseButtonText = "Закрыть"
-                            };
-                            var fr = await SafeShowDialogAsync(failDialog);
-                            if (fr == ContentDialogResult.Primary)
-                            {
-                                IsRedirectingToSettings = true;
-                                await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
-                            }
-                            return;
-                        }
-
-                        await CheckVpnStatusAsync();
-                        if (!_isConnected)
-                        {
-                            ResetToDisconnectedUI("Туннель не ответил. Попробуйте ещё раз.");
                         }
                     }
                     else
                     {
-                        AppLog.W("[VPN MGR] Системный профиль: переход в параметры сети для запуска туннеля.");
-
-                        var runDialog = new ContentDialog
+                        AppLog.W($"[VPN MGR] Не удалось активировать VPN-профиль напрямую ({connectStatus}). Предлагаем параметры сети.");
+                        ResetToDisconnectedUI();
+                        var failDialog = new ContentDialog
                         {
                             Title = "Подключение VPN",
-                            Content = $"Сервер:\n{_selectedProfile.Name}\n\n" +
-                                      "Настройки сохранены. Для запуска туннеля в Windows 10 Mobile нажмите «Подключиться» и выберите профиль MetroBox в параметрах.",
-                            PrimaryButtonText = "Подключиться",
-                            CloseButtonText = "Отмена"
+                            Content = $"Не удалось активировать профиль «{mine.ProfileName}» напрямую ({connectStatus}).\n\n" +
+                                      "Для подключения в Windows 10 Mobile откройте параметры VPN и нажмите «Подключиться».\n\n" +
+                                      "Убедитесь, что в свойствах профиля указаны:\n" +
+                                      "• Имя пользователя: vpn\n" +
+                                      "• Пароль: vpn\n" +
+                                      "• Галочка «Запомнить данные»",
+                            PrimaryButtonText = "Параметры VPN",
+                            CloseButtonText = "Закрыть"
                         };
-
-                        var dr = await SafeShowDialogAsync(runDialog);
-                        if (dr == ContentDialogResult.Primary)
+                        var fr = await SafeShowDialogAsync(failDialog);
+                        if (fr == ContentDialogResult.Primary)
                         {
-                            ResetToDisconnectedUI();
                             IsRedirectingToSettings = true;
-                            StatusText.Text = "Параметры VPN открыты. Нажмите «Подключиться».";
                             await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
                         }
-                        else
-                        {
-                            ResetToDisconnectedUI("Подключение отменено.");
-                        }
+                        return;
+                    }
+
+                    await CheckVpnStatusAsync();
+                    if (!_isConnected)
+                    {
+                        ResetToDisconnectedUI("Туннель не ответил. Попробуйте ещё раз.");
                     }
                 }
                 catch (Exception ex)
@@ -1156,10 +1080,13 @@ namespace VlessApp
                 Content = "В Windows 10 Mobile системный профиль создаётся один раз в параметрах сети:\n\n" +
                           "1. Нажмите «Открыть параметры» ниже\n" +
                           "2. Нажмите «+ Добавить VPN-подключение»\n" +
-                          "3. Поставщик VPN: выберите «Metrobox»\n" +
+                          "3. Поставщик VPN: выберите «MetroBox»\n" +
                           "4. Имя подключения: MetroBox\n" +
                           "5. Имя или адрес сервера: 127.0.0.1 (уже скопировано в буфер)\n" +
-                          "6. Нажмите «Сохранить»\n\n" +
+                          "6. Имя пользователя: vpn\n" +
+                          "7. Пароль: vpn\n" +
+                          "8. Отметьте «Запомнить мои данные для входа»\n" +
+                          "9. Нажмите «Сохранить»\n\n" +
                           "После этого VPN будет подключаться кнопкой прямо из приложения!",
                 PrimaryButtonText = "Открыть параметры",
                 CloseButtonText = "Закрыть"

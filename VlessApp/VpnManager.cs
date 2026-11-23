@@ -363,6 +363,8 @@ namespace VlessApp
             return null;
         }
 
+        private static string _lastLoggedProfileSummary = "";
+
         public async Task<IVpnProfile> FindOwnProfileAsync()
         {
             try
@@ -370,7 +372,21 @@ namespace VlessApp
                 var agent = new VpnManagementAgent();
                 var profiles = await agent.GetProfilesAsync();
 
-                AppLog.W($"[VPN MGR] Всего профилей в ОС: {profiles.Count}");
+                var sb = new System.Text.StringBuilder();
+                sb.Append(profiles.Count);
+                for (int i = 0; i < profiles.Count; i++)
+                {
+                    var p = profiles[i];
+                    var st = (p is VpnPlugInProfile pl) ? pl.ConnectionStatus.ToString() : "Other";
+                    sb.Append($"|{p.ProfileName}:{st}");
+                }
+                string currentSummary = sb.ToString();
+                bool shouldLog = currentSummary != _lastLoggedProfileSummary;
+                if (shouldLog)
+                {
+                    _lastLoggedProfileSummary = currentSummary;
+                    AppLog.W($"[VPN MGR] Профилей в ОС: {profiles.Count}");
+                }
 
                 IVpnProfile candidate = null;
 
@@ -381,11 +397,13 @@ namespace VlessApp
                     if (pr is VpnPlugInProfile plug)
                     {
                         try { status = plug.ConnectionStatus; } catch { }
-                        AppLog.W($"[VPN MGR] #{i} Профиль '{pr.ProfileName}', статус: {status}, PFN плагина: '{plug.VpnPluginPackageFamilyName}'");
+                        if (shouldLog)
+                            AppLog.W($"[VPN MGR] #{i} '{pr.ProfileName}': {status}, PFN='{plug.VpnPluginPackageFamilyName}'");
                     }
                     else
                     {
-                        AppLog.W($"[VPN MGR] #{i} Профиль '{pr.ProfileName}' (тип {pr.GetType().Name})");
+                        if (shouldLog)
+                            AppLog.W($"[VPN MGR] #{i} '{pr.ProfileName}' ({pr.GetType().Name})");
                     }
 
                     bool nameMatch = string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||

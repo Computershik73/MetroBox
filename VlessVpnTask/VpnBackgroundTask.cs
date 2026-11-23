@@ -9,6 +9,12 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll", EntryPoint = "ExitProcess")]
+        private static extern void ExitProcessApiSet(uint uExitCode);
+
+        [DllImport("kernel32.dll", EntryPoint = "ExitProcess")]
+        private static extern void ExitProcessKernel32(uint uExitCode);
+
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -17,6 +23,7 @@ namespace VlessVpnTask
 
         public void Run(IBackgroundTaskInstance taskInstance)
         {
+            _exiting = false;
             FileLog.Init();
 
             // Deferral берём на КАЖДУЮ активацию. Завершаем его либо при чистом выходе
@@ -135,11 +142,10 @@ namespace VlessVpnTask
                 try { deferral?.Complete(); } catch { }
                 if (ReferenceEquals(deferral, _deferral)) _deferral = null;
 
-                try { Windows.ApplicationModel.Core.CoreApplication.Exit(); }
-                catch (Exception ex)
-                {
-                    try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
-                }
+                try { ExitProcessApiSet(0); } catch { }
+                try { ExitProcessKernel32(0); } catch { }
+                try { Windows.ApplicationModel.Core.CoreApplication.Exit(); } catch { }
+                try { Environment.FailFast("VlessVpnTask clean exit"); } catch { }
 
 
             });
