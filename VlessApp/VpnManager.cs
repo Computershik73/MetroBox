@@ -89,11 +89,14 @@ namespace VlessApp
                     content = content.Replace("AuthRestrictions=552", "AuthRestrictions=0");
                     content = content.Replace("CacheCredentials=0", "CacheCredentials=1");
                     content = content.Replace("PreviewUserPw=1", "PreviewUserPw=0");
+                    content = content.Replace("DEVICE=vpn", "DEVICE=modem");
+                    content = content.Replace("AlwaysOnCapable=1", "AlwaysOnCapable=0");
+                    content = content.Replace("Options=1", "Options=0");
 
                     if (content != original)
                     {
                         System.IO.File.WriteAllText(pbkPath, content);
-                        AppLog.W("[VPN MGR] Пропатчен LocalState/rasphone.pbk (UseRasCredentials=0, AuthRestrictions=0)");
+                        AppLog.W("[VPN MGR] Пропатчен LocalState/rasphone.pbk (UseRasCredentials=0, AuthRestrictions=0, DEVICE=modem)");
                     }
                     return true;
                 }
@@ -345,7 +348,14 @@ namespace VlessApp
                         {
                             return pr;
                         }
-                        candidate = pr;
+                        if (pr is VpnPlugInProfile plugPr && !string.IsNullOrEmpty(plugPr.VpnPluginPackageFamilyName))
+                        {
+                            candidate = pr; // Give top priority to our own local hidden profile
+                        }
+                        else if (candidate == null)
+                        {
+                            candidate = pr;
+                        }
                     }
                 }
 
@@ -393,6 +403,12 @@ namespace VlessApp
         {
             PatchLocalRasphonePbk();
             EnsurePasswordVaultCredentials();
+
+            if (!HasLocalPbk() && IsAutoCreateProfileEnabled())
+            {
+                AppLog.W("[VPN MGR] Локальный скрытый профиль отсутствует. Автоматически создаём...");
+                await CreateHiddenProfileAsync();
+            }
 
             var mine = await FindOwnProfileAsync();
             if (mine != null) return mine;

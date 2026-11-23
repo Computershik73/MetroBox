@@ -1003,7 +1003,7 @@ namespace VlessApp
                             CloseButtonText = "Отмена"
                         };
 
-                        var dr = await runDialog.ShowAsync();
+                        var dr = await SafeShowDialogAsync(runDialog);
                         if (dr == ContentDialogResult.Primary)
                         {
                             ResetToDisconnectedUI();
