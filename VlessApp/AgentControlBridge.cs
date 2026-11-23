@@ -169,6 +169,19 @@ namespace VlessApp
                             tcs.SetResult(CreateStatusJson(cmdId));
                             break;
 
+                        case "recreate_profile":
+                            await VpnManager.DeleteHiddenProfileAsync();
+                            bool recOk = await VpnManager.CreateHiddenProfileAsync();
+                            _mainPage.UpdateProfileInfoUI();
+                            tcs.SetResult(CreateResponseJson(cmdId, recOk ? "ok" : "error", recOk ? "Hidden profile recreated" : "Recreate failed"));
+                            break;
+
+                        case "delete_profile":
+                            bool delOk = await VpnManager.DeleteHiddenProfileAsync();
+                            _mainPage.UpdateProfileInfoUI();
+                            tcs.SetResult(CreateResponseJson(cmdId, delOk ? "ok" : "error", delOk ? "Hidden profile deleted" : "Delete failed"));
+                            break;
+
                         default:
                             tcs.SetResult(CreateResponseJson(cmdId, "error", $"Unknown action '{action}'"));
                             break;

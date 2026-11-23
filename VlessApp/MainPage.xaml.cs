@@ -567,7 +567,7 @@ namespace VlessApp
                                           "Проверьте подключение к Интернету (Wi-Fi) и настройки профиля в параметрах сети.",
                                 CloseButtonText = "Закрыть"
                             };
-                            _ = timeoutDialog.ShowAsync();
+                            _ = SafeShowDialogAsync(timeoutDialog);
                         }
                     }
                 }
@@ -575,6 +575,32 @@ namespace VlessApp
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[STATUS CHECK FAIL] {ex.Message}");
+            }
+        }
+
+        private static ContentDialog _activeContentDialog = null;
+
+        private async Task<ContentDialogResult> SafeShowDialogAsync(ContentDialog dialog)
+        {
+            try
+            {
+                if (_activeContentDialog != null)
+                {
+                    try { _activeContentDialog.Hide(); } catch { }
+                    _activeContentDialog = null;
+                }
+                _activeContentDialog = dialog;
+                var res = await dialog.ShowAsync();
+                return res;
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[DIALOG] SafeShowDialog: {ex.Message}");
+                return ContentDialogResult.None;
+            }
+            finally
+            {
+                if (_activeContentDialog == dialog) _activeContentDialog = null;
             }
         }
 
@@ -917,22 +943,45 @@ namespace VlessApp
                     if (kind == VpnProfileKind.LocalHidden)
                     {
                         StatusText.Text = "Запуск сетевого туннеля...";
-                        AppLog.W("[VPN MGR] Запуск локального профиля через ConnectProfileWithPasswordCredentialAsync...");
+                        AppLog.W("[VPN MGR] Запуск локального профиля через ConnectProfileAsync...");
 
                         var agent = new Windows.Networking.Vpn.VpnManagementAgent();
-                        var cred = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
-                        var connectStatus = await agent.ConnectProfileWithPasswordCredentialAsync(mine, cred);
-                        AppLog.W($"[VPN MGR] Результат запуска скрытого профиля: {connectStatus}");
+                        var connectStatus = await agent.ConnectProfileAsync(mine);
+                        AppLog.W($"[VPN MGR] Результат ConnectProfileAsync: {connectStatus}");
 
-                        for (int w = 0; w < 12; w++)
+                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
                         {
-                            await Task.Delay(400);
-                            bool tunUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
-                            if (tunUp || IsVpnInterfaceActive())
+                            AppLog.W("[VPN MGR] ConnectProfileAsync вернул ошибку, пробуем ConnectProfileWithPasswordCredentialAsync...");
+                            try
                             {
-                                await CheckVpnStatusAsync();
-                                return;
+                                var cred = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
+                                connectStatus = await agent.ConnectProfileWithPasswordCredentialAsync(mine, cred);
+                                AppLog.W($"[VPN MGR] Результат ConnectProfileWithPasswordCredentialAsync: {connectStatus}");
                             }
+                            catch (Exception cx)
+                            {
+                                AppLog.W($"[VPN MGR] Ошибка при передаче учетных данных: {cx.Message}");
+                            }
+                        }
+
+                        if (connectStatus == Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                        {
+                            for (int w = 0; w < 15; w++)
+                            {
+                                await Task.Delay(400);
+                                bool tunUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+                                if (tunUp || IsVpnInterfaceActive())
+                                {
+                                    await CheckVpnStatusAsync();
+                                    return;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            AppLog.W($"[VPN MGR] Прямой запуск профиля не удался ({connectStatus}), открываем параметры сети...");
+                            IsRedirectingToSettings = true;
+                            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
                         }
 
                         await CheckVpnStatusAsync();
@@ -2743,7 +2792,7 @@ namespace VlessApp
             AboutPageGrid.Visibility = Visibility.Visible;
         }
 
-        private async void UpdateProfileInfoUI()
+        public async void UpdateProfileInfoUI()
         {
             try
             {
@@ -2791,7 +2840,7 @@ namespace VlessApp
                         : "Не удалось автоматически зарегистрировать профиль. Вы можете добавить его вручную в параметрах сети.",
                     CloseButtonText = "ОК"
                 };
-                await d.ShowAsync();
+                await SafeShowDialogAsync(d);
             }
             finally
             {
@@ -2813,7 +2862,7 @@ namespace VlessApp
                     Content = "Локальный VPN-профиль и телефонная книга очищены.",
                     CloseButtonText = "ОК"
                 };
-                await d.ShowAsync();
+                await SafeShowDialogAsync(d);
             }
             finally
             {

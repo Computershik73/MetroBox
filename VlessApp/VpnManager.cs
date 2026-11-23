@@ -110,6 +110,20 @@ namespace VlessApp
             try
             {
                 var agent = new VpnManagementAgent();
+                try
+                {
+                    var existing = await agent.GetProfilesAsync();
+                    foreach (var p in existing)
+                    {
+                        if (string.Equals(p.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(p.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try { await agent.DeleteProfileAsync(p); } catch { }
+                        }
+                    }
+                }
+                catch { }
+
                 var plug = new VpnPlugInProfile
                 {
                     ProfileName = ProfileName,
