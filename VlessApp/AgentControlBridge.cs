@@ -182,6 +182,51 @@ namespace VlessApp
                             tcs.SetResult(CreateResponseJson(cmdId, delOk ? "ok" : "error", delOk ? "Hidden profile deleted" : "Delete failed"));
                             break;
 
+                        case "profiles_diag":
+                            var diagAgent = new Windows.Networking.Vpn.VpnManagementAgent();
+                            var pList = await diagAgent.GetProfilesAsync();
+                            var diagSb = new System.Text.StringBuilder();
+                            diagSb.Append("[");
+                            for (int di = 0; di < pList.Count; di++)
+                            {
+                                if (di > 0) diagSb.Append(",");
+                                var pr = pList[di];
+                                string pfn = (pr is Windows.Networking.Vpn.VpnPlugInProfile pl) ? pl.VpnPluginPackageFamilyName : "";
+                                string statusStr = "Unknown";
+                                if (pr is Windows.Networking.Vpn.VpnPlugInProfile plPr)
+                                {
+                                    try { statusStr = plPr.ConnectionStatus.ToString(); } catch { }
+                                }
+                                diagSb.Append($"{{\"index\":{di},\"name\":\"{EscapeJson(pr.ProfileName)}\",\"type\":\"{pr.GetType().Name}\",\"pfn\":\"{EscapeJson(pfn)}\",\"status\":\"{statusStr}\"}}");
+                            }
+                            diagSb.Append("]");
+                            tcs.SetResult(CreateResponseJson(cmdId, "ok", "Profiles retrieved", $"\"profiles\":{diagSb.ToString()}"));
+                            break;
+
+                        case "delete_all_profiles":
+                            var delAllAgent = new Windows.Networking.Vpn.VpnManagementAgent();
+                            var allToDel = await delAllAgent.GetProfilesAsync();
+                            var delSb = new System.Text.StringBuilder();
+                            delSb.Append("[");
+                            for (int dxi = 0; dxi < allToDel.Count; dxi++)
+                            {
+                                if (dxi > 0) delSb.Append(",");
+                                var pr = allToDel[dxi];
+                                Windows.Networking.Vpn.VpnManagementErrorStatus st = Windows.Networking.Vpn.VpnManagementErrorStatus.Other;
+                                try { st = await delAllAgent.DeleteProfileAsync(pr); } catch { }
+                                delSb.Append($"{{\"name\":\"{EscapeJson(pr.ProfileName)}\",\"status\":\"{st}\"}}");
+                            }
+                            delSb.Append("]");
+                            var localFolder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                            string localPbk = System.IO.Path.Combine(localFolder.Path, "rasphone.pbk");
+                            if (System.IO.File.Exists(localPbk))
+                            {
+                                try { System.IO.File.Delete(localPbk); } catch { }
+                            }
+                            _mainPage.UpdateProfileInfoUI();
+                            tcs.SetResult(CreateResponseJson(cmdId, "ok", "All profiles deleted", $"\"results\":{delSb.ToString()}"));
+                            break;
+
                         default:
                             tcs.SetResult(CreateResponseJson(cmdId, "error", $"Unknown action '{action}'"));
                             break;

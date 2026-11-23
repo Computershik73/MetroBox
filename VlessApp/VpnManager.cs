@@ -89,14 +89,14 @@ namespace VlessApp
                     content = content.Replace("AuthRestrictions=552", "AuthRestrictions=0");
                     content = content.Replace("CacheCredentials=0", "CacheCredentials=1");
                     content = content.Replace("PreviewUserPw=1", "PreviewUserPw=0");
-                    content = content.Replace("DEVICE=vpn", "DEVICE=modem");
+                    content = content.Replace("DEVICE=modem", "DEVICE=vpn");
                     content = content.Replace("AlwaysOnCapable=1", "AlwaysOnCapable=0");
                     content = content.Replace("Options=1", "Options=0");
 
                     if (content != original)
                     {
                         System.IO.File.WriteAllText(pbkPath, content);
-                        AppLog.W("[VPN MGR] Пропатчен LocalState/rasphone.pbk (UseRasCredentials=0, AuthRestrictions=0, DEVICE=modem)");
+                        AppLog.W("[VPN MGR] Пропатчен LocalState/rasphone.pbk (UseRasCredentials=0, AuthRestrictions=0, DEVICE=vpn)");
                     }
                     return true;
                 }
@@ -121,7 +121,15 @@ namespace VlessApp
                         if (string.Equals(p.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(p.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
                         {
-                            try { await agent.DeleteProfileAsync(p); } catch { }
+                            try
+                            {
+                                var delSt = await agent.DeleteProfileAsync(p);
+                                AppLog.W($"[VPN MGR] Очистка старого профиля '{p.ProfileName}': {delSt}");
+                            }
+                            catch (Exception dex)
+                            {
+                                AppLog.W($"[VPN MGR] Исключение при очистке '{p.ProfileName}': {dex.Message}");
+                            }
                         }
                     }
                 }
@@ -161,7 +169,15 @@ namespace VlessApp
                     if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
                     {
-                        try { await agent.DeleteProfileAsync(pr); } catch { }
+                        try
+                        {
+                            var delSt = await agent.DeleteProfileAsync(pr);
+                            AppLog.W($"[VPN MGR] Удаление профиля '{pr.ProfileName}': {delSt}");
+                        }
+                        catch (Exception dex)
+                        {
+                            AppLog.W($"[VPN MGR] Исключение при удалении '{pr.ProfileName}': {dex.Message}");
+                        }
                     }
                 }
 
@@ -326,17 +342,18 @@ namespace VlessApp
 
                 IVpnProfile candidate = null;
 
-                foreach (var pr in profiles)
+                for (int i = 0; i < profiles.Count; i++)
                 {
+                    var pr = profiles[i];
                     VpnManagementConnectionStatus status = VpnManagementConnectionStatus.Disconnected;
                     if (pr is VpnPlugInProfile plug)
                     {
                         try { status = plug.ConnectionStatus; } catch { }
-                        AppLog.W($"[VPN MGR] Профиль '{pr.ProfileName}', статус: {status}, PFN плагина: '{plug.VpnPluginPackageFamilyName}'");
+                        AppLog.W($"[VPN MGR] #{i} Профиль '{pr.ProfileName}', статус: {status}, PFN плагина: '{plug.VpnPluginPackageFamilyName}'");
                     }
                     else
                     {
-                        AppLog.W($"[VPN MGR] Профиль '{pr.ProfileName}' (тип {pr.GetType().Name})");
+                        AppLog.W($"[VPN MGR] #{i} Профиль '{pr.ProfileName}' (тип {pr.GetType().Name})");
                     }
 
                     bool nameMatch = string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
