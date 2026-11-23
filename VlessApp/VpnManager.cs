@@ -7,9 +7,162 @@ using Windows.ApplicationModel;
 
 namespace VlessApp
 {
+    public enum VpnProfileKind
+    {
+        None,
+        SystemVisible,
+        LocalHidden
+    }
+
     public class VpnManager
     {
         public const string ProfileName = "MetroBox";
+
+        public static bool IsAutoCreateProfileEnabled()
+        {
+            try
+            {
+                var s = Windows.Storage.ApplicationData.Current.LocalSettings.Values;
+                if (s.ContainsKey("v_AutoCreateProfile"))
+                {
+                    return (s["v_AutoCreateProfile"] as bool?) ?? true;
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        public static void SetAutoCreateProfileEnabled(bool enabled)
+        {
+            try
+            {
+                Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_AutoCreateProfile"] = enabled;
+            }
+            catch { }
+        }
+
+        public static bool HasLocalPbk()
+        {
+            try
+            {
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
+                return System.IO.File.Exists(pbkPath);
+            }
+            catch { return false; }
+        }
+
+        public static async Task<VpnProfileKind> GetProfileKindAsync()
+        {
+            try
+            {
+                var agent = new VpnManagementAgent();
+                var profiles = await agent.GetProfilesAsync();
+                bool localPbk = HasLocalPbk();
+
+                foreach (var pr in profiles)
+                {
+                    if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (localPbk) return VpnProfileKind.LocalHidden;
+                        return VpnProfileKind.SystemVisible;
+                    }
+                }
+            }
+            catch { }
+            return VpnProfileKind.None;
+        }
+
+        public static bool PatchLocalRasphonePbk()
+        {
+            try
+            {
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
+                if (System.IO.File.Exists(pbkPath))
+                {
+                    string content = System.IO.File.ReadAllText(pbkPath);
+                    string original = content;
+
+                    content = content.Replace("UseRasCredentials=1", "UseRasCredentials=0");
+                    content = content.Replace("AuthRestrictions=552", "AuthRestrictions=0");
+                    content = content.Replace("CacheCredentials=0", "CacheCredentials=1");
+                    content = content.Replace("PreviewUserPw=1", "PreviewUserPw=0");
+
+                    if (content != original)
+                    {
+                        System.IO.File.WriteAllText(pbkPath, content);
+                        AppLog.W("[VPN MGR] Пропатчен LocalState/rasphone.pbk (UseRasCredentials=0, AuthRestrictions=0)");
+                    }
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] PatchLocalRasphonePbk: {ex.Message}");
+            }
+            return false;
+        }
+
+        public static async Task<bool> CreateHiddenProfileAsync()
+        {
+            try
+            {
+                var agent = new VpnManagementAgent();
+                var plug = new VpnPlugInProfile
+                {
+                    ProfileName = ProfileName,
+                    VpnPluginPackageFamilyName = Package.Current.Id.FamilyName
+                };
+                plug.ServerUris.Add(new Uri("https://127.0.0.1"));
+
+                var status = await agent.AddProfileFromObjectAsync(plug);
+                AppLog.W($"[VPN MGR] AddProfileFromObjectAsync: {status}");
+
+                PatchLocalRasphonePbk();
+                EnsurePasswordVaultCredentials();
+                return status == VpnManagementErrorStatus.Ok;
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] CreateHiddenProfileAsync: {ex.Message}");
+                PatchLocalRasphonePbk();
+                EnsurePasswordVaultCredentials();
+                return false;
+            }
+        }
+
+        public static async Task<bool> DeleteHiddenProfileAsync()
+        {
+            try
+            {
+                var agent = new VpnManagementAgent();
+                var profiles = await agent.GetProfilesAsync();
+                foreach (var pr in profiles)
+                {
+                    if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { await agent.DeleteProfileAsync(pr); } catch { }
+                    }
+                }
+
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
+                if (System.IO.File.Exists(pbkPath))
+                {
+                    System.IO.File.Delete(pbkPath);
+                    AppLog.W("[VPN MGR] Удален локальный rasphone.pbk");
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] DeleteHiddenProfileAsync: {ex.Message}");
+                return false;
+            }
+        }
 
         public async Task ConnectVlessAsync(VlessProfile p)
         {
@@ -217,32 +370,22 @@ namespace VlessApp
             }
         }
 
-        // Удаление битого приватного rasphone.pbk из LocalFolder (созданного некорректным AddProfileFromObjectAsync),
-        // чтобы приложение и система использовали единый чистый системный профиль.
-        public static void CleanupBrokenPrivatePhonebook()
-        {
-            try
-            {
-                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
-                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
-                if (System.IO.File.Exists(pbkPath))
-                {
-                    System.IO.File.Delete(pbkPath);
-                    AppLog.W("[VPN MGR] Удален поврежденный приватный rasphone.pbk из LocalState");
-                }
-            }
-            catch (Exception ex)
-            {
-                AppLog.W($"[VPN MGR] CleanupBrokenPrivatePhonebook: {ex.Message}");
-            }
-        }
-
         public async Task<IVpnProfile> EnsureOwnProfileAsync()
         {
-            CleanupBrokenPrivatePhonebook();
+            PatchLocalRasphonePbk();
             EnsurePasswordVaultCredentials();
 
-            return await FindOwnProfileAsync();
+            var mine = await FindOwnProfileAsync();
+            if (mine != null) return mine;
+
+            if (IsAutoCreateProfileEnabled())
+            {
+                AppLog.W("[VPN MGR] Профиль не найден. Автоматически создаём локальный скрытый профиль...");
+                await CreateHiddenProfileAsync();
+                mine = await FindOwnProfileAsync();
+            }
+
+            return mine;
         }
     }
 }

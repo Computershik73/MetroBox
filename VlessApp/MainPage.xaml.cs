@@ -186,7 +186,42 @@ namespace VlessApp
             catch { }
 
             Loaded += MainPage_Loaded;
+
+            try
+            {
+                AgentControlBridge.Start(this);
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[MainPage] AgentControlBridge.Start failed: {ex.Message}");
+            }
         }
+
+        internal void TriggerConnect()
+        {
+            if (!_isConnected)
+            {
+                ConnectBtn_Click(this, new RoutedEventArgs());
+            }
+        }
+
+        internal void TriggerDisconnect()
+        {
+            if (_isConnected)
+            {
+                ConnectBtn_Click(this, new RoutedEventArgs());
+            }
+        }
+
+        internal void TriggerSelectProfile(VlessProfile profile)
+        {
+            SelectProfile(profile);
+        }
+
+        internal List<VlessProfile> GetAllProfiles() => _allProfiles;
+        internal VlessProfile GetSelectedProfile() => _selectedProfile;
+        internal string GetCurrentStatus() => StatusText?.Text;
+        internal bool IsConnected() => _isConnected;
 
         private async void AutoUpdateTimer_Tick(object sender, object e)
         {
@@ -809,7 +844,7 @@ namespace VlessApp
                     }
                 }
 
-                VpnManager.CleanupBrokenPrivatePhonebook();
+                VpnManager.PatchLocalRasphonePbk();
 
                 var mine = await _vpnManager.EnsureOwnProfileAsync();
                 _cachedProfile = mine;
@@ -874,31 +909,63 @@ namespace VlessApp
 
                 try
                 {
-                    VpnManager.CleanupBrokenPrivatePhonebook();
+                    VpnManager.PatchLocalRasphonePbk();
                     VpnManager.EnsurePasswordVaultCredentials();
 
-                    AppLog.W("[VPN MGR] Настройки сохранены. Запрос перехода в параметры сети для запуска туннеля.");
+                    var kind = await VpnManager.GetProfileKindAsync();
 
-                    var runDialog = new ContentDialog
+                    if (kind == VpnProfileKind.LocalHidden)
                     {
-                        Title = "Подключение VPN",
-                        Content = $"Сервер:\n{_selectedProfile.Name}\n\n" +
-                                  "Настройки сохранены. Для запуска туннеля в Windows 10 Mobile нажмите «Подключиться» и выберите профиль MetroBox в параметрах.",
-                        PrimaryButtonText = "Подключиться",
-                        CloseButtonText = "Отмена"
-                    };
+                        StatusText.Text = "Запуск сетевого туннеля...";
+                        AppLog.W("[VPN MGR] Запуск локального профиля через ConnectProfileWithPasswordCredentialAsync...");
 
-                    var dr = await runDialog.ShowAsync();
-                    if (dr == ContentDialogResult.Primary)
-                    {
-                        ResetToDisconnectedUI();
-                        IsRedirectingToSettings = true;
-                        StatusText.Text = "Параметры VPN открыты. Нажмите «Подключиться».";
-                        await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
+                        var agent = new Windows.Networking.Vpn.VpnManagementAgent();
+                        var cred = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
+                        var connectStatus = await agent.ConnectProfileWithPasswordCredentialAsync(mine, cred);
+                        AppLog.W($"[VPN MGR] Результат запуска скрытого профиля: {connectStatus}");
+
+                        for (int w = 0; w < 12; w++)
+                        {
+                            await Task.Delay(400);
+                            bool tunUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+                            if (tunUp || IsVpnInterfaceActive())
+                            {
+                                await CheckVpnStatusAsync();
+                                return;
+                            }
+                        }
+
+                        await CheckVpnStatusAsync();
+                        if (!_isConnected)
+                        {
+                            ResetToDisconnectedUI("Туннель не ответил. Попробуйте ещё раз.");
+                        }
                     }
                     else
                     {
-                        ResetToDisconnectedUI("Подключение отменено.");
+                        AppLog.W("[VPN MGR] Системный профиль: переход в параметры сети для запуска туннеля.");
+
+                        var runDialog = new ContentDialog
+                        {
+                            Title = "Подключение VPN",
+                            Content = $"Сервер:\n{_selectedProfile.Name}\n\n" +
+                                      "Настройки сохранены. Для запуска туннеля в Windows 10 Mobile нажмите «Подключиться» и выберите профиль MetroBox в параметрах.",
+                            PrimaryButtonText = "Подключиться",
+                            CloseButtonText = "Отмена"
+                        };
+
+                        var dr = await runDialog.ShowAsync();
+                        if (dr == ContentDialogResult.Primary)
+                        {
+                            ResetToDisconnectedUI();
+                            IsRedirectingToSettings = true;
+                            StatusText.Text = "Параметры VPN открыты. Нажмите «Подключиться».";
+                            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
+                        }
+                        else
+                        {
+                            ResetToDisconnectedUI("Подключение отменено.");
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -2672,7 +2739,86 @@ namespace VlessApp
         private void SettingsBtn_Click(object sender, RoutedEventArgs e)
         {
             UpdateProxyInfoUI();
+            UpdateProfileInfoUI();
             AboutPageGrid.Visibility = Visibility.Visible;
+        }
+
+        private async void UpdateProfileInfoUI()
+        {
+            try
+            {
+                AutoCreateProfileToggle.IsOn = VpnManager.IsAutoCreateProfileEnabled();
+
+                var kind = await VpnManager.GetProfileKindAsync();
+                switch (kind)
+                {
+                    case VpnProfileKind.LocalHidden:
+                        ProfileStatusText.Text = "● Локальный скрытый профиль (прямой запуск из приложения)";
+                        ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129));
+                        break;
+                    case VpnProfileKind.SystemVisible:
+                        ProfileStatusText.Text = "● Системный профиль (видимый в параметрах ОС и шторке)";
+                        ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 59, 130, 246));
+                        break;
+                    default:
+                        ProfileStatusText.Text = "○ Профиль отсутствует (будет создан автоматически)";
+                        ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 156, 163, 175));
+                        break;
+                }
+            }
+            catch { }
+        }
+
+        private void AutoCreateProfileToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            VpnManager.SetAutoCreateProfileEnabled(AutoCreateProfileToggle.IsOn);
+        }
+
+        private async void RecreateProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            RecreateProfileBtn.IsEnabled = false;
+            try
+            {
+                await VpnManager.DeleteHiddenProfileAsync();
+                bool ok = await VpnManager.CreateHiddenProfileAsync();
+                UpdateProfileInfoUI();
+
+                var d = new ContentDialog
+                {
+                    Title = ok ? "Профиль создан" : "Внимание",
+                    Content = ok
+                        ? "Локальный скрытый VPN-профиль успешно создан и настроен!\n\nОн подключается напрямую кнопкой из приложения без перехода в системные параметры."
+                        : "Не удалось автоматически зарегистрировать профиль. Вы можете добавить его вручную в параметрах сети.",
+                    CloseButtonText = "ОК"
+                };
+                await d.ShowAsync();
+            }
+            finally
+            {
+                RecreateProfileBtn.IsEnabled = true;
+            }
+        }
+
+        private async void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
+        {
+            DeleteProfileBtn.IsEnabled = false;
+            try
+            {
+                await VpnManager.DeleteHiddenProfileAsync();
+                UpdateProfileInfoUI();
+
+                var d = new ContentDialog
+                {
+                    Title = "Профиль удален",
+                    Content = "Локальный VPN-профиль и телефонная книга очищены.",
+                    CloseButtonText = "ОК"
+                };
+                await d.ShowAsync();
+            }
+            finally
+            {
+                DeleteProfileBtn.IsEnabled = true;
+            }
         }
 
         private void AboutBackBtn_Click(object sender, RoutedEventArgs e)
