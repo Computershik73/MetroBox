@@ -101,54 +101,19 @@ namespace VlessVpnTask
             if (_exiting) return;
             _exiting = true;
 
-            try { FileLog.Important("[BG TASK] TearDown: гашу плагин."); } catch { }
+            try { FileLog.Important("[BG TASK] TearDown: синхронно освобождаю ресурсы плагина..."); } catch { }
 
-            // Запоминаем, какое подключение гасим и чья это отсрочка: если за время
-            // ожидания придёт новое подключение, выходить будет нельзя.
-            int generation = System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration);
-            var deferral = _deferral;
-
-            // 1) синхронно освобождаем ресурсы плагина (сокеты, движок, loopback)
             try { _plugin.Disconnect(null); } catch { }
 
-            // 2) выход уводим в сторону от потока, на котором система вызвала Disconnect:
-            //    пока мы на нём спим, платформа ждёт возврата из собственного вызова.
-            //
-            //    И deferral завершаем ПОСЛЕДНИМ. Complete() — это разрешение системе убить
-            //    процесс, а до него нужно успеть закрыть сокеты и дописать журнал. Прежний
-            //    порядок (сначала Complete, потом ожидание) процесс переживал не всегда: в
-            //    журнале телефона видно, как запись обрывается на середине Disconnect, и
-            //    следующее подключение падало с ошибкой 691 — ресурсы туннеля остались за
-            //    убитым процессом.
-            System.Threading.Tasks.Task.Run(async () =>
-            {
-                try { await System.Threading.Tasks.Task.Delay(1250); } catch { }
+            try { FileLog.Important("[BG TASK] TearDown: завершаю deferral и завершаю процесс."); } catch { }
 
-                // Пока процесс дозакрывался, система пришла с новым подключением — в тот
-                // же процесс. Выход сейчас убил бы свежий туннель на середине подъёма.
-                // Туннель закрыли приложением и сразу открыли снова — ровно так и бывает.
-                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation || _plugin.IsConnected)
-                {
-                    try { FileLog.Important("[BG TASK] TearDown отменён: пока процесс закрывался, пришло новое подключение."); } catch { }
+            try { _deferral?.Complete(); } catch { }
+            _deferral = null;
 
-                    // Свою отсрочку закрываем, только если она уже не нужна новому сеансу.
-                    if (!ReferenceEquals(deferral, _deferral)) { try { deferral?.Complete(); } catch { } }
-                    _exiting = false;
-                    return;
-                }
-
-                try { FileLog.Important("[BG TASK] TearDown: отпускаю задачу и выхожу."); } catch { }
-
-                try { deferral?.Complete(); } catch { }
-                if (ReferenceEquals(deferral, _deferral)) _deferral = null;
-
-                try { ExitProcessApiSet(0); } catch { }
-                try { ExitProcessKernel32(0); } catch { }
-                try { Windows.ApplicationModel.Core.CoreApplication.Exit(); } catch { }
-                try { Environment.FailFast("VlessVpnTask clean exit"); } catch { }
-
-
-            });
+            try { ExitProcessApiSet(0); } catch { }
+            try { ExitProcessKernel32(0); } catch { }
+            try { Windows.ApplicationModel.Core.CoreApplication.Exit(); } catch { }
+            try { Environment.FailFast("VlessVpnTask clean exit"); } catch { }
         }
     }
 }
