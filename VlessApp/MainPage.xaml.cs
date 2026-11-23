@@ -972,6 +972,52 @@ namespace VlessApp
                             }
                         }
 
+                        // Если транспорт занят (Other / AlreadyInUse) — пересоздаём профиль и делаем один retry
+                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                        {
+                            AppLog.W($"[VPN MGR] ConnectProfileAsync вернул {connectStatus} — пересоздаём скрытый профиль и пробуем ещё раз...");
+                            StatusText.Text = "Пересборка VPN-профиля...";
+                            try
+                            {
+                                await VpnManager.DeleteHiddenProfileAsync();
+                                await Task.Delay(800);
+                                bool recreated = await VpnManager.CreateHiddenProfileAsync();
+                                AppLog.W($"[VPN MGR] Пересоздание профиля: {(recreated ? "Ok" : "Fail")}");
+                                if (recreated)
+                                {
+                                    await Task.Delay(1500); // даём RasMan инициализировать транспорт
+                                    VpnManager.PatchLocalRasphonePbk();
+                                    mine = await _vpnManager.FindOwnProfileAsync();
+                                    _cachedProfile = mine;
+                                    if (mine != null)
+                                    {
+                                        StatusText.Text = "Запуск сетевого туннеля (повтор)...";
+                                        AppLog.W("[VPN MGR] Retry ConnectProfileAsync после пересоздания...");
+                                        var agent2 = new Windows.Networking.Vpn.VpnManagementAgent();
+                                        connectStatus = await agent2.ConnectProfileAsync(mine);
+                                        AppLog.W($"[VPN MGR] Retry ConnectProfileAsync: {connectStatus}");
+                                        if (connectStatus != Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                                        {
+                                            try
+                                            {
+                                                var cred2 = new Windows.Security.Credentials.PasswordCredential(mine.ProfileName, "vpn", "vpn");
+                                                connectStatus = await agent2.ConnectProfileWithPasswordCredentialAsync(mine, cred2);
+                                                AppLog.W($"[VPN MGR] Retry ConnectProfileWithPasswordCredentialAsync: {connectStatus}");
+                                            }
+                                            catch (Exception cx2)
+                                            {
+                                                AppLog.W($"[VPN MGR] Ошибка при retry с учётными данными: {cx2.Message}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception rex)
+                            {
+                                AppLog.W($"[VPN MGR] Ошибка при пересоздании профиля: {rex.Message}");
+                            }
+                        }
+
                         if (connectStatus == Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
                         {
                             for (int w = 0; w < 15; w++)
@@ -987,9 +1033,27 @@ namespace VlessApp
                         }
                         else
                         {
-                            AppLog.W($"[VPN MGR] Прямой запуск профиля не удался ({connectStatus}), открываем параметры сети...");
-                            IsRedirectingToSettings = true;
-                            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
+                            // Не переходим тихо в настройки — показываем информативный диалог
+                            AppLog.W($"[VPN MGR] Не удалось активировать VPN-профиль ({connectStatus}) даже после пересоздания.");
+                            ResetToDisconnectedUI();
+                            var failDialog = new ContentDialog
+                            {
+                                Title = "Не удалось подключиться",
+                                Content = $"VPN-профиль не удалось активировать (ошибка: {connectStatus}).\n\n" +
+                                          "Возможные причины:\n" +
+                                          "• RasMan не освободил транспорт — перезагрузите телефон.\n" +
+                                          "• Профиль не зарегистрирован — зайдите в Настройки > Пересоздать скрытый профиль.\n\n" +
+                                          "Если перезагрузка не помогает — удалите все VPN-профили из системных параметров.",
+                                PrimaryButtonText = "Открыть параметры VPN",
+                                CloseButtonText = "Закрыть"
+                            };
+                            var fr = await SafeShowDialogAsync(failDialog);
+                            if (fr == ContentDialogResult.Primary)
+                            {
+                                IsRedirectingToSettings = true;
+                                await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
+                            }
+                            return;
                         }
 
                         await CheckVpnStatusAsync();
@@ -1054,8 +1118,20 @@ namespace VlessApp
                 bool anyDisconnected = false;
                 foreach (var p in profiles)
                 {
-                    // Пропускаем зомби-профили с пустым PFN
-                    if (p is VpnPlugInProfile plug && string.IsNullOrEmpty(plug.VpnPluginPackageFamilyName))
+                    // Проверяем, наш ли это профиль по имени или по текущему активному подключению
+                    bool isOurProfile = string.Equals(p.ProfileName, VpnManager.ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ProfileName, "Metrobox", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
+
+                    // Проверяем статус подключения: если профиль активен (Connected), отключаем его обязательно!
+                    bool isConnectedStatus = false;
+                    if (p is VpnPlugInProfile plugStatus)
+                    {
+                        try { isConnectedStatus = plugStatus.ConnectionStatus == VpnManagementConnectionStatus.Connected; } catch { }
+                    }
+
+                    if (!isOurProfile && !isConnectedStatus)
                         continue;
 
                     try
@@ -2866,15 +2942,28 @@ namespace VlessApp
             DeleteProfileBtn.IsEnabled = false;
             try
             {
-                await VpnManager.DeleteHiddenProfileAsync();
+                bool wasDeleted = await VpnManager.DeleteHiddenProfileAsync();
                 UpdateProfileInfoUI();
 
-                var d = new ContentDialog
+                ContentDialog d;
+                if (wasDeleted)
                 {
-                    Title = "Профиль удален",
-                    Content = "Локальный VPN-профиль и телефонная книга очищены.",
-                    CloseButtonText = "ОК"
-                };
+                    d = new ContentDialog
+                    {
+                        Title = "Профиль удалён",
+                        Content = "Локальный VPN-профиль и телефонная книга очищены.",
+                        CloseButtonText = "ОК"
+                    };
+                }
+                else
+                {
+                    d = new ContentDialog
+                    {
+                        Title = "Профиль не найден",
+                        Content = "Скрытый VPN-профиль уже отсутствует — удалять нечего.",
+                        CloseButtonText = "ОК"
+                    };
+                }
                 await SafeShowDialogAsync(d);
             }
             finally

@@ -18,6 +18,13 @@ namespace VlessApp
     {
         public const string ProfileName = "MetroBox Tunnel";
 
+        // [ЭКСПЕРИМЕНТАЛЬНО / ВРЕМЕННО ОТКЛЮЧЕНО]
+        // Автосоздание скрытого профиля VpnPlugInProfile через AddProfileFromObjectAsync и прямой запуск через ConnectProfileAsync
+        // на Windows 10 Mobile (10.0.15063) приводят к залипанию системного драйвера RasMan (miniport transport lock)
+        // и ошибке "Cannot use the transport because it is already in use". При этом фоновое VPN-подключение зависает
+        // без передачи трафика и блокирует выключение устройства.
+        // До глубокой отладки автоконфигурирования режим по умолчанию выключен (false), приоритет отдаётся
+        // проверенному ручному системному профилю, создаваемому в параметрах ОС.
         public static bool IsAutoCreateProfileEnabled()
         {
             try
@@ -25,11 +32,11 @@ namespace VlessApp
                 var s = Windows.Storage.ApplicationData.Current.LocalSettings.Values;
                 if (s.ContainsKey("v_AutoCreateProfile"))
                 {
-                    return (s["v_AutoCreateProfile"] as bool?) ?? true;
+                    return (s["v_AutoCreateProfile"] as bool?) ?? false;
                 }
             }
             catch { }
-            return true;
+            return false;
         }
 
         public static void SetAutoCreateProfileEnabled(bool enabled)
@@ -166,6 +173,30 @@ namespace VlessApp
             {
                 var agent = new VpnManagementAgent();
                 var profiles = await agent.GetProfilesAsync();
+
+                // Проверяем наличие нашего профиля до попытки удаления (guard against double-delete)
+                bool found = false;
+                foreach (var pr in profiles)
+                {
+                    if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
+                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
+                bool pbkExists = System.IO.File.Exists(pbkPath);
+
+                if (!found && !pbkExists)
+                {
+                    AppLog.W("[VPN MGR] Скрытый профиль и rasphone.pbk отсутствуют — нечего удалять.");
+                    return false; // ← false означает «профиля не было»
+                }
+
                 foreach (var pr in profiles)
                 {
                     if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
@@ -184,14 +215,12 @@ namespace VlessApp
                     }
                 }
 
-                var folder = Windows.Storage.ApplicationData.Current.LocalFolder;
-                string pbkPath = System.IO.Path.Combine(folder.Path, "rasphone.pbk");
-                if (System.IO.File.Exists(pbkPath))
+                if (pbkExists)
                 {
                     System.IO.File.Delete(pbkPath);
                     AppLog.W("[VPN MGR] Удален локальный rasphone.pbk");
                 }
-                return true;
+                return true; // true = профиль был и удалён
             }
             catch (Exception ex)
             {
@@ -361,16 +390,11 @@ namespace VlessApp
 
                     bool nameMatch = string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "Metrobox", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
 
                     if (nameMatch)
                     {
-                        if (pr is VpnPlugInProfile plugPr && string.IsNullOrEmpty(plugPr.VpnPluginPackageFamilyName))
-                        {
-                            AppLog.W($"[VPN MGR] Пропуск профиля #{i} '{pr.ProfileName}' с пустым PFN (зомби)");
-                            continue;
-                        }
-
                         if (status == VpnManagementConnectionStatus.Connected)
                         {
                             return pr;
@@ -406,20 +430,29 @@ namespace VlessApp
         }
 
         // Сохранение учетных данных в хранилище Windows Credential Manager (PasswordVault),
-        // чтобы системный диалер RAS и параметры ОС не требовали ввода данных и не выдавали ошибку 691.
+        // чтобы системный диалер RAS и параметры ОС не требовали ввода данных и не выдавали ошибку 691
+        // при подключении как скрытого, так и вручную созданного системного профиля ("MetroBox", "Metrobox").
         public static void EnsurePasswordVaultCredentials()
         {
+            string[] knownProfileNames = { ProfileName, "MetroBox", "Metrobox", "VLESS Client" };
             try
             {
                 var vault = new Windows.Security.Credentials.PasswordVault();
-                try
+                foreach (var name in knownProfileNames)
                 {
-                    vault.Retrieve(ProfileName, "vpn");
-                }
-                catch
-                {
-                    vault.Add(new Windows.Security.Credentials.PasswordCredential(ProfileName, "vpn", "vpn"));
-                    AppLog.W("[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для обхода RAS 691");
+                    try
+                    {
+                        vault.Retrieve(name, "vpn");
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            vault.Add(new Windows.Security.Credentials.PasswordCredential(name, "vpn", "vpn"));
+                            AppLog.W($"[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для профиля '{name}'");
+                        }
+                        catch { }
+                    }
                 }
             }
             catch (Exception ex)
