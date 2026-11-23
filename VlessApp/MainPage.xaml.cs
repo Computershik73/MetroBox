@@ -1415,7 +1415,7 @@ namespace VlessApp
             }
         }
 
-        private async Task ProcessAndAddImportTextAsync(string text)
+        internal async Task ProcessAndAddImportTextAsync(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
 

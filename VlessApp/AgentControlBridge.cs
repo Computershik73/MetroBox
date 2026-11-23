@@ -169,6 +169,14 @@ namespace VlessApp
                             tcs.SetResult(CreateStatusJson(cmdId));
                             break;
 
+                        case "import_url":
+                            string importText = ExtractJsonString(json, "url");
+                            if (string.IsNullOrEmpty(importText)) importText = ExtractJsonString(json, "text");
+                            await _mainPage.ProcessAndAddImportTextAsync(importText);
+                            tcs.SetResult(CreateResponseJson(cmdId, "ok", "Import processed",
+                                $"\"total_profiles\":{_mainPage.GetAllProfiles().Count}"));
+                            break;
+
                         case "recreate_profile":
                             await VpnManager.DeleteHiddenProfileAsync();
                             bool recOk = await VpnManager.CreateHiddenProfileAsync();

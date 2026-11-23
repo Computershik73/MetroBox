@@ -16,7 +16,7 @@ namespace VlessApp
 
     public class VpnManager
     {
-        public const string ProfileName = "MetroBox";
+        public const string ProfileName = "MetroBox Tunnel";
 
         public static bool IsAutoCreateProfileEnabled()
         {
@@ -63,6 +63,7 @@ namespace VlessApp
                 foreach (var pr in profiles)
                 {
                     if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
                     {
                         if (localPbk) return VpnProfileKind.LocalHidden;
@@ -119,6 +120,7 @@ namespace VlessApp
                     foreach (var p in existing)
                     {
                         if (string.Equals(p.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(p.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(p.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
                         {
                             try
@@ -167,6 +169,7 @@ namespace VlessApp
                 foreach (var pr in profiles)
                 {
                     if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase))
                     {
                         try
@@ -357,17 +360,24 @@ namespace VlessApp
                     }
 
                     bool nameMatch = string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(pr.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
 
                     if (nameMatch)
                     {
+                        if (pr is VpnPlugInProfile plugPr && string.IsNullOrEmpty(plugPr.VpnPluginPackageFamilyName))
+                        {
+                            AppLog.W($"[VPN MGR] Пропуск профиля #{i} '{pr.ProfileName}' с пустым PFN (зомби)");
+                            continue;
+                        }
+
                         if (status == VpnManagementConnectionStatus.Connected)
                         {
                             return pr;
                         }
-                        if (pr is VpnPlugInProfile plugPr && !string.IsNullOrEmpty(plugPr.VpnPluginPackageFamilyName))
+                        if (string.Equals(pr.ProfileName, ProfileName, StringComparison.OrdinalIgnoreCase))
                         {
-                            candidate = pr; // Give top priority to our own local hidden profile
+                            candidate = pr; // Highest priority: exact match to current ProfileName
                         }
                         else if (candidate == null)
                         {
@@ -378,7 +388,14 @@ namespace VlessApp
 
                 if (candidate != null) return candidate;
 
-                if (profiles.Count > 0) return profiles[0];
+                if (profiles.Count > 0)
+                {
+                    foreach (var p in profiles)
+                    {
+                        if (p is VpnPlugInProfile plug && !string.IsNullOrEmpty(plug.VpnPluginPackageFamilyName))
+                            return p;
+                    }
+                }
             }
             catch (Exception ex)
             {
