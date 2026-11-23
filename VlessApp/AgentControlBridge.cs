@@ -81,7 +81,7 @@ namespace VlessApp
                                 await writer.FlushAsync();
                             }
 
-                            // Delete incoming command file
+                            // Delete command file to mark as processed
                             await file.DeleteAsync(StorageDeleteOption.PermanentDelete);
                             AppLog.W("[AGENT BRIDGE] Command finished, response saved.");
                         }
@@ -102,6 +102,7 @@ namespace VlessApp
             string action = "";
             int x = 0;
             int y = 0;
+            string target = "";
             string name = "";
             string address = "";
             int index = -1;
@@ -112,6 +113,7 @@ namespace VlessApp
                 action = ExtractJsonString(json, "action").ToLowerInvariant();
                 x = ExtractJsonInt(json, "x", 0);
                 y = ExtractJsonInt(json, "y", 0);
+                target = ExtractJsonString(json, "target");
                 name = ExtractJsonString(json, "name");
                 address = ExtractJsonString(json, "address");
                 index = ExtractJsonInt(json, "index", -1);
@@ -131,8 +133,14 @@ namespace VlessApp
                     {
                         case "tap":
                         case "click":
-                            string tapResult = await HandleTapAsync(x, y);
+                            string tapResult = await HandleTapAsync(cmdId, target, x, y);
                             tcs.SetResult(tapResult);
+                            break;
+
+                        case "elements":
+                        case "ui_tree":
+                            string elementsResult = HandleGetElements(cmdId);
+                            tcs.SetResult(elementsResult);
                             break;
 
                         case "select_server":
@@ -153,20 +161,12 @@ namespace VlessApp
                             break;
 
                         case "screenshot":
-                            string ssResult = await HandleScreenshotAsync(cmdId);
-                            tcs.SetResult(ssResult);
+                            string shotResult = await HandleScreenshotAsync(cmdId);
+                            tcs.SetResult(shotResult);
                             break;
 
                         case "status":
-                            var curProf = _mainPage.GetSelectedProfile();
-                            string profName = curProf != null ? EscapeJson(curProf.Name) : "";
-                            string profAddr = curProf != null ? EscapeJson(curProf.Address) : "";
-                            int profPort = curProf != null ? curProf.Port : 0;
-                            string extra = string.Format(
-                                "\"selected_profile\":\"{0}\",\"selected_address\":\"{1}\",\"selected_port\":{2},\"vpn_status\":\"{3}\",\"is_connected\":{4},\"total_profiles\":{5}",
-                                profName, profAddr, profPort, EscapeJson(_mainPage.GetCurrentStatus()), _mainPage.IsConnected() ? "true" : "false", _mainPage.GetAllProfiles().Count
-                            );
-                            tcs.SetResult(CreateResponseJson(cmdId, "ok", "Status report", extra));
+                            tcs.SetResult(CreateStatusJson(cmdId));
                             break;
 
                         default:
@@ -184,13 +184,48 @@ namespace VlessApp
             return await tcs.Task;
         }
 
-        private async Task<string> HandleTapAsync(int x, int y)
+        private string CreateStatusJson(string cmdId)
         {
+            var selected = _mainPage.GetSelectedProfile();
+            var profiles = _mainPage.GetAllProfiles();
+
+            string selName = selected != null ? EscapeJson(selected.Name) : "";
+            string selAddr = selected != null ? EscapeJson(selected.Address) : "";
+            int selPort = selected != null ? selected.Port : 0;
+            string vpnStatus = EscapeJson(_mainPage.GetCurrentStatus());
+            bool isConn = _mainPage.IsConnected();
+            int totalProfiles = profiles != null ? profiles.Count : 0;
+
+            string extra = string.Format(
+                "\"selected_profile\":\"{0}\",\"selected_address\":\"{1}\",\"selected_port\":{2},\"vpn_status\":\"{3}\",\"is_connected\":{4},\"total_profiles\":{5}",
+                selName, selAddr, selPort, vpnStatus, isConn ? "true" : "false", totalProfiles);
+
+            return CreateResponseJson(cmdId, "ok", "Status report", extra);
+        }
+
+        private async Task<string> HandleTapAsync(string cmdId, string target, int x, int y)
+        {
+            string invokedControl = "";
+            string hitInfo = "";
+
+            // 1. Direct target by control name
+            if (!string.IsNullOrEmpty(target))
+            {
+                var namedObj = _mainPage.FindName(target) as DependencyObject;
+                if (namedObj != null)
+                {
+                    if (InvokeElementOrAncestors(namedObj, out invokedControl))
+                    {
+                        AppLog.W($"[AGENT BRIDGE] Tap target '{target}' -> invoked: {invokedControl}");
+                        return CreateResponseJson(cmdId, "ok", $"Target '{target}' invoked", $"\"target\":\"{target}\",\"invoked\":\"{invokedControl}\"");
+                    }
+                }
+                return CreateResponseJson(cmdId, "error", $"Target '{target}' not found or not actionable");
+            }
+
+            // 2. Coordinate tap with ancestor tree walk
             var pt = new Point(x, y);
             var hitElements = VisualTreeHelper.FindElementsInHostCoordinates(pt, _mainPage).ToList();
-
-            string hitInfo = "none";
-            string invokedControl = "";
 
             if (hitElements.Count > 0)
             {
@@ -201,45 +236,10 @@ namespace VlessApp
                 });
                 hitInfo = string.Join(" > ", names);
 
-                // Find first interactive control
                 foreach (var elem in hitElements)
                 {
-                    if (elem is Button btn)
+                    if (InvokeElementOrAncestors(elem, out invokedControl))
                     {
-                        invokedControl = $"Button#{btn.Name}";
-                        btn.Focus(FocusState.Programmatic);
-                        var peer = new ButtonAutomationPeer(btn);
-                        var invoke = peer.GetPattern(PatternInterface.Invoke) as IInvokeProvider;
-                        if (invoke != null)
-                        {
-                            invoke.Invoke();
-                        }
-                        else
-                        {
-                            btn.Command?.Execute(btn.CommandParameter);
-                        }
-                        break;
-                    }
-                    if (elem is ToggleSwitch ts)
-                    {
-                        invokedControl = $"ToggleSwitch#{ts.Name}";
-                        ts.IsOn = !ts.IsOn;
-                        break;
-                    }
-                    if (elem is FrameworkElement fe && fe.DataContext is VlessProfile prof)
-                    {
-                        invokedControl = $"VlessProfile#{prof.Name}";
-                        _mainPage.TriggerSelectProfile(prof);
-                        break;
-                    }
-                    if (elem is ListViewItem lvi)
-                    {
-                        invokedControl = "ListViewItem";
-                        lvi.IsSelected = true;
-                        if (lvi.Content is VlessProfile p)
-                        {
-                            _mainPage.TriggerSelectProfile(p);
-                        }
                         break;
                     }
                 }
@@ -251,7 +251,85 @@ namespace VlessApp
             string extra = string.Format("\"x\":{0},\"y\":{1},\"hit\":\"{2}\",\"invoked\":\"{3}\"",
                 x, y, EscapeJson(hitInfo), EscapeJson(invokedControl));
 
-            return CreateResponseJson("", "ok", "Tap executed", extra);
+            return CreateResponseJson(cmdId, "ok", "Tap executed", extra);
+        }
+
+        private bool InvokeElementOrAncestors(DependencyObject startElem, out string invokedControl)
+        {
+            DependencyObject current = startElem;
+            while (current != null && current != _mainPage)
+            {
+                if (current is Button btn)
+                {
+                    invokedControl = $"Button#{btn.Name}";
+                    btn.Focus(FocusState.Programmatic);
+                    var peer = new ButtonAutomationPeer(btn);
+                    var invoke = peer.GetPattern(PatternInterface.Invoke) as IInvokeProvider;
+                    if (invoke != null)
+                    {
+                        invoke.Invoke();
+                    }
+                    else
+                    {
+                        btn.Command?.Execute(btn.CommandParameter);
+                    }
+                    return true;
+                }
+                if (current is ToggleSwitch ts)
+                {
+                    invokedControl = $"ToggleSwitch#{ts.Name}";
+                    ts.IsOn = !ts.IsOn;
+                    return true;
+                }
+                if (current is FrameworkElement fe && fe.DataContext is VlessProfile prof)
+                {
+                    invokedControl = $"VlessProfile#{prof.Name}";
+                    _mainPage.TriggerSelectProfile(prof);
+                    return true;
+                }
+                if (current is ListViewItem lvi)
+                {
+                    invokedControl = "ListViewItem";
+                    lvi.IsSelected = true;
+                    if (lvi.Content is VlessProfile p)
+                    {
+                        _mainPage.TriggerSelectProfile(p);
+                    }
+                    return true;
+                }
+                current = VisualTreeHelper.GetParent(current);
+            }
+            invokedControl = "";
+            return false;
+        }
+
+        private string HandleGetElements(string cmdId)
+        {
+            var list = new List<string>();
+            FindNamedElements(_mainPage, list);
+            string elementsJson = "[" + string.Join(",", list) + "]";
+            return CreateResponseJson(cmdId, "ok", "UI elements retrieved", $"\"elements\":{elementsJson}");
+        }
+
+        private void FindNamedElements(DependencyObject parent, List<string> elements)
+        {
+            int count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is FrameworkElement fe && !string.IsNullOrEmpty(fe.Name))
+                {
+                    try
+                    {
+                        var transform = fe.TransformToVisual(_mainPage);
+                        var pt = transform.TransformPoint(new Point(0, 0));
+                        string elemJson = $"{{\"name\":\"{fe.Name}\",\"type\":\"{fe.GetType().Name}\",\"x\":{(int)pt.X},\"y\":{(int)pt.Y},\"width\":{(int)fe.ActualWidth},\"height\":{(int)fe.ActualHeight},\"visible\":{(fe.Visibility == Visibility.Visible ? "true" : "false")}}}";
+                        elements.Add(elemJson);
+                    }
+                    catch { }
+                }
+                FindNamedElements(child, elements);
+            }
         }
 
         private string HandleSelectServer(string name, string address, int index)

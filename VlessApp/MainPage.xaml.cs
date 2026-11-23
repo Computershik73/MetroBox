@@ -320,7 +320,7 @@ namespace VlessApp
 
         private async void MainPage_Loaded(object sender, RoutedEventArgs e)
         {
-            VpnManager.CleanupBrokenPrivatePhonebook();
+            VpnManager.PatchLocalRasphonePbk();
 
             ApplyLowEndGpuFixes();
 

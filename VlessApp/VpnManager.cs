@@ -370,6 +370,11 @@ namespace VlessApp
             }
         }
 
+        public static void CleanupBrokenPrivatePhonebook()
+        {
+            PatchLocalRasphonePbk();
+        }
+
         public async Task<IVpnProfile> EnsureOwnProfileAsync()
         {
             PatchLocalRasphonePbk();
