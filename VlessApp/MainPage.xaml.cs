@@ -911,8 +911,7 @@ namespace VlessApp
                         if (activePlug.ConnectionStatus == VpnManagementConnectionStatus.Connected)
                         {
                             AppLog.W("[VPN MGR] Профиль уже подключен в системе — обновляем UI.");
-                            _isConnected = true;
-                            UpdateUiForConnectedState();
+                            await CheckVpnStatusAsync();
                             return;
                         }
                     }
