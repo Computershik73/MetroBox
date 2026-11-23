@@ -928,8 +928,16 @@ namespace VlessApp
                 // Безусловно освобождаем транспортные порты и зависшие сессии RasMan перед новым подключением
                 try
                 {
-                    await ForceDisconnectActiveProfileAsync();
-                    await Task.Delay(500);
+                    bool wasActive = await ForceDisconnectActiveProfileAsync();
+                    if (wasActive)
+                    {
+                        AppLog.W("[VPN MGR] Ожидание завершения предыдущей сессии RasMan (2.5 сек)...");
+                        await Task.Delay(2500);
+                    }
+                    else
+                    {
+                        await Task.Delay(300);
+                    }
                 }
                 catch { }
 
@@ -1043,14 +1051,19 @@ namespace VlessApp
                     return false;
                 }
 
-                bool any = false;
+                bool anyDisconnected = false;
                 foreach (var p in profiles)
                 {
+                    // Пропускаем зомби-профили с пустым PFN
+                    if (p is VpnPlugInProfile plug && string.IsNullOrEmpty(plug.VpnPluginPackageFamilyName))
+                        continue;
+
                     try
                     {
                         var status = await agent.DisconnectProfileAsync(p);
                         AppLog.W($"  отключение профиля '{p.ProfileName}': {status}");
-                        any = true;
+                        if (status == Windows.Networking.Vpn.VpnManagementErrorStatus.Ok)
+                            anyDisconnected = true;
                     }
                     catch (Exception ex)
                     {
@@ -1064,7 +1077,7 @@ namespace VlessApp
                 }
                 catch { }
 
-                return any;
+                return anyDisconnected;
             }
             catch (Exception ex)
             {
