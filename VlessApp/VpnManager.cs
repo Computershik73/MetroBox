@@ -377,7 +377,11 @@ namespace VlessApp
                 for (int i = 0; i < profiles.Count; i++)
                 {
                     var p = profiles[i];
-                    var st = (p is VpnPlugInProfile pl) ? pl.ConnectionStatus.ToString() : "Other";
+                    string st = "Other";
+                    if (p is VpnPlugInProfile pl)
+                    {
+                        try { st = pl.ConnectionStatus.ToString(); } catch { st = "Unknown"; }
+                    }
                     sb.Append($"|{p.ProfileName}:{st}");
                 }
                 string currentSummary = sb.ToString();
