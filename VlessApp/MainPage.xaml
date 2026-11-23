@@ -301,8 +301,8 @@
                 </Grid>
 
                 <!-- Контентная карточка -->
-                <ScrollViewer Grid.Row="1" Margin="16,10,16,16">
-                    <Border Background="#12182D" CornerRadius="16" BorderBrush="#1F264E" BorderThickness="1" Padding="20">
+                <ScrollViewer Grid.Row="1" Margin="16,10,16,16" Background="#090D1A">
+                    <Border Background="#12182D" CornerRadius="12" BorderBrush="#1F264E" BorderThickness="1" Padding="20">
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->
                             <TextBlock Text="MetroBox" FontSize="28" FontWeight="Bold" Foreground="#3B82F6" HorizontalAlignment="Center"/>
@@ -333,10 +333,14 @@
                             <!-- Управление VPN-профилем в системе -->
                             <TextBlock Text="VPN-профиль в системе:" FontSize="14" FontWeight="Bold" Foreground="White" Margin="0,4,0,6"/>
                             <TextBlock x:Name="ProfileStatusText" Text="Статус: проверка..." FontSize="12" Foreground="#9CA3AF" TextWrapping="Wrap" Margin="0,0,0,6"/>
-                            <ToggleSwitch x:Name="AutoCreateProfileToggle" Header="Автосоздание скрытого профиля (экспериментально)" Toggled="AutoCreateProfileToggle_Toggled" Margin="0,0,0,6"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,2,0,16">
-                                <Button x:Name="RecreateProfileBtn" Content="Создать скрытый" Click="RecreateProfileBtn_Click" Margin="0,0,8,0" Padding="12,6"/>
-                                <Button x:Name="DeleteProfileBtn" Content="Удалить" Click="DeleteProfileBtn_Click" Background="#451A1A" Foreground="#F87171" Padding="12,6"/>
+                            <Button x:Name="OpenVpnSettingsBtn" Content="Параметры VPN сети" Click="OpenVpnSettingsBtn_Click" Margin="0,2,0,16" Padding="12,6"/>
+
+                            <StackPanel x:Name="ExperimentalProfilePanel" Visibility="Collapsed">
+                                <ToggleSwitch x:Name="AutoCreateProfileToggle" Header="Автосоздание скрытого профиля (экспериментально)" Toggled="AutoCreateProfileToggle_Toggled" Margin="0,0,0,6"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,16">
+                                    <Button x:Name="RecreateProfileBtn" Content="Создать скрытый" Click="RecreateProfileBtn_Click" Margin="0,0,8,0" Padding="12,6"/>
+                                    <Button x:Name="DeleteProfileBtn" Content="Удалить" Click="DeleteProfileBtn_Click" Background="#451A1A" Foreground="#F87171" Padding="12,6"/>
+                                </StackPanel>
                             </StackPanel>
 
                             <!-- Раздел ссылок -->

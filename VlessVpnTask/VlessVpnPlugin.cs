@@ -614,7 +614,8 @@ namespace VlessVpnTask
 
         public void Disconnect(VpnChannel channel)
         {
-            if (_disconnected) { try { channel?.Stop(); } catch { } return; }
+            var ch = channel ?? _channel;
+            if (_disconnected) { try { ch?.Stop(); } catch { } return; }
             _disconnected = true;
             SetTunnelUp(false);
 
@@ -636,13 +637,17 @@ namespace VlessVpnTask
             try { _awgEngine?.SignalStop(); } catch { }
             _awgEngine = null;
             try { _natEngine?.SignalStop(); } catch { }
+            _natEngine = null;
 
+            try { _triggerWriter?.DetachStream(); _triggerWriter?.Dispose(); } catch { }
+            _triggerWriter = null;
             try { _dummyTransport?.Dispose(); } catch { }
             _dummyTransport = null;
             try { _dummyTrigger?.Dispose(); } catch { }
             _dummyTrigger = null;
 
-            try { channel?.Stop(); } catch { }
+            try { ch?.Stop(); } catch { }
+            _channel = null;
 
             IsConnected = false;
             try { Disconnected?.Invoke(); } catch { }

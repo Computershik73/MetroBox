@@ -468,25 +468,11 @@ namespace VlessApp
 
         public async Task<IVpnProfile> EnsureOwnProfileAsync()
         {
-            PatchLocalRasphonePbk();
             EnsurePasswordVaultCredentials();
 
-            if (!HasLocalPbk() && IsAutoCreateProfileEnabled())
-            {
-                AppLog.W("[VPN MGR] Локальный скрытый профиль отсутствует. Автоматически создаём...");
-                await CreateHiddenProfileAsync();
-            }
-
+            // Автоконфигурирование скрытого профиля временно отключено (miniport lock в RasMan).
+            // Приоритет отдается стабильному системному профилю, настроенному в параметрах ОС.
             var mine = await FindOwnProfileAsync();
-            if (mine != null) return mine;
-
-            if (IsAutoCreateProfileEnabled())
-            {
-                AppLog.W("[VPN MGR] Профиль не найден. Автоматически создаём локальный скрытый профиль...");
-                await CreateHiddenProfileAsync();
-                mine = await FindOwnProfileAsync();
-            }
-
             return mine;
         }
     }

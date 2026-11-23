@@ -402,23 +402,8 @@ namespace VlessApp
         {
             try
             {
-                // Проверяем наличие активного профиля соединения MetroBox или PPP/Tunnel в сетевом стеке Windows
-                var connections = Windows.Networking.Connectivity.NetworkInformation.GetConnectionProfiles();
-                foreach (var conn in connections)
-                {
-                    if (string.Equals(conn.ProfileName, "MetroBox", StringComparison.OrdinalIgnoreCase))
-                        return true;
-
-                    if (conn.NetworkAdapter != null)
-                    {
-                        uint type = conn.NetworkAdapter.IanaInterfaceType;
-                        // 23 = PPP (Point-to-Point Protocol, как адаптер MetroBox в ipconfig), 131 = Tunnel, 150 = Other Tunnel
-                        if (type == 23 || type == 131 || type == 150)
-                            return true;
-                    }
-                }
-
-                // Запасной опрос локальных имен
+                // Проверяем наличие назначенного виртуального IP туннеля (по умолчанию 11.16.1.1)
+                // в сетевом стеке Windows. Этот IP существует ТОЛЬКО когда активен виртуальный адаптер IVpnPlugIn.
                 string tunIp = Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunIp"] as string;
                 if (string.IsNullOrEmpty(tunIp)) tunIp = "11.16.1.1";
 
@@ -439,29 +424,8 @@ namespace VlessApp
         }
 
         // Состояние туннеля глазами системы.
-        // Если плагин подтверждает готовность (v_TunnelUp) ИЛИ сетевой интерфейс туннеля активен —
-        // соединение 100% активно, даже если профиль был запущен из системных параметров
-        // Windows 10 Mobile, а не через прямой UWP-вызов ConnectProfileAsync.
         private static VpnManagementConnectionStatus ReadVpnState(VpnPlugInProfile plug)
         {
-            // 1. Прямой флаг от запущенного плагина
-            bool pluginSaysUp = false;
-            try
-            {
-                pluginSaysUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
-            }
-            catch { }
-
-            // 2. Наличие активного сетевого интерфейса туннеля (PPP / Tunnel / MetroBox)
-            bool tunActive = false;
-            try { tunActive = IsVpnInterfaceActive(); } catch { }
-
-            // Если плагин подтверждает поднятый туннель ИЛИ сетевой интерфейс активен — туннель подключён!
-            if (pluginSaysUp || tunActive)
-            {
-                return VpnManagementConnectionStatus.Connected;
-            }
-
             if (plug != null)
             {
                 try
@@ -475,6 +439,19 @@ namespace VlessApp
                         return VpnManagementConnectionStatus.Disconnecting;
                 }
                 catch { }
+            }
+
+            // Запасная проверка: флаг плагина + реальное наличие IP туннеля в сетевом стеке
+            bool pluginSaysUp = false;
+            try
+            {
+                pluginSaysUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+            }
+            catch { }
+
+            if (pluginSaysUp && IsVpnInterfaceActive())
+            {
+                return VpnManagementConnectionStatus.Connected;
             }
 
             return VpnManagementConnectionStatus.Disconnected;
@@ -2890,21 +2867,33 @@ namespace VlessApp
                 var kind = await VpnManager.GetProfileKindAsync();
                 switch (kind)
                 {
-                    case VpnProfileKind.LocalHidden:
-                        ProfileStatusText.Text = "● Локальный скрытый профиль (прямой запуск из приложения)";
+                    case VpnProfileKind.SystemVisible:
+                        ProfileStatusText.Text = "● Системный профиль готов (MetroBox в параметрах ОС)";
                         ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129));
                         break;
-                    case VpnProfileKind.SystemVisible:
-                        ProfileStatusText.Text = "● Системный профиль (видимый в параметрах ОС и шторке)";
+                    case VpnProfileKind.LocalHidden:
+                        ProfileStatusText.Text = "● Локальный скрытый профиль (экспериментально)";
                         ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 59, 130, 246));
                         break;
                     default:
-                        ProfileStatusText.Text = "○ Профиль отсутствует (будет создан автоматически)";
+                        ProfileStatusText.Text = "○ Системный профиль не найден (нажмите кнопку ниже)";
                         ProfileStatusText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 156, 163, 175));
                         break;
                 }
             }
             catch { }
+        }
+
+        private async void OpenVpnSettingsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dp = new Windows.ApplicationModel.DataTransfer.DataPackage();
+                dp.SetText("127.0.0.1");
+                Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dp);
+            }
+            catch { }
+            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-vpn"));
         }
 
         private void AutoCreateProfileToggle_Toggled(object sender, RoutedEventArgs e)
