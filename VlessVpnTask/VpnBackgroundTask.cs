@@ -9,6 +9,9 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll")]
+        private static extern uint GetCurrentProcessId();
+
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -61,8 +64,7 @@ namespace VlessVpnTask
             Debug.WriteLine("[BG TASK] Активация фоновой задачи VPN.");
             try
             {
-                var cur = Process.GetCurrentProcess();
-                FileLog.Important($"[BG TASK] Активация фоновой задачи VPN в процессе '{cur.ProcessName}' (PID {cur.Id}).");
+                FileLog.Important($"[BG TASK] Активация фоновой задачи VPN (PID {GetCurrentProcessId()}).");
             }
             catch { }
 
@@ -126,8 +128,7 @@ namespace VlessVpnTask
 
                 try
                 {
-                    var cur = Process.GetCurrentProcess();
-                    FileLog.Important($"[BG TASK] TearDown: завершаю deferral фоновой задачи в процессе '{cur.ProcessName}' (PID {cur.Id}).");
+                    FileLog.Important($"[BG TASK] TearDown: завершаю deferral фоновой задачи (PID {GetCurrentProcessId()}).");
                 }
                 catch { }
                 try { FileLog.Flush(); } catch { }
