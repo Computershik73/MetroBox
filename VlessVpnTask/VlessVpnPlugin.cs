@@ -639,15 +639,16 @@ namespace VlessVpnTask
             try { _natEngine?.SignalStop(); } catch { }
             _natEngine = null;
 
+            // Канал RasMan останавливаем первым, пока ассоциированный с ним транспорт _dummyTransport еще жив!
+            try { ch?.Stop(); } catch { }
+            _channel = null;
+
             try { _triggerWriter?.DetachStream(); _triggerWriter?.Dispose(); } catch { }
             _triggerWriter = null;
             try { _dummyTransport?.Dispose(); } catch { }
             _dummyTransport = null;
             try { _dummyTrigger?.Dispose(); } catch { }
             _dummyTrigger = null;
-
-            try { ch?.Stop(); } catch { }
-            _channel = null;
 
             IsConnected = false;
             try { Disconnected?.Invoke(); } catch { }

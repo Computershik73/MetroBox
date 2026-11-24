@@ -9,12 +9,6 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
-        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll", EntryPoint = "ExitProcess")]
-        private static extern void ExitProcessApiSet(uint uExitCode);
-
-        [DllImport("kernel32.dll", EntryPoint = "ExitProcess")]
-        private static extern void ExitProcessKernel32(uint uExitCode);
-
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -95,12 +89,10 @@ namespace VlessVpnTask
 
         // Единственная точка выхода.
         // 1) Синхронно гасит плагин (_channel.Stop() и сокеты).
-        // 2) Завершение процесса выполняет асинхронно с задержкой 800 мс, чтобы
-        //    вызов Disconnect(channel) успел штатно вернуться в систему, и служба RasMan
-        //    чисто закрыла порт до уничтожения процесса.
-        // 3) ExitProcess / FailFast вызываются ДО deferral.Complete(), так как на W10M
-        //    вызов Complete() немедленно приостанавливает (suspend) процесс, превращая его в зомби.
-        //    Чистый выход гарантирует отсутствие ошибки 691 на повторном подключении.
+        // 2) Завершение deferral выполняет асинхронно с задержкой 1250 мс вне RPC-потока RasMan,
+        //    чтобы вызов Disconnect(channel) успел штатно вернуть S_OK в систему и служба
+        //    RasMan чисто закрыла порт до сброса отсрочки UWP.
+        // 3) Сброс _exiting = false позволяет повторному подключению подняться в том же процессе.
         private static void TearDownAndExit()
         {
             if (_exiting) return;
@@ -108,17 +100,17 @@ namespace VlessVpnTask
 
             try { FileLog.Important("[BG TASK] TearDown: синхронно освобождаю ресурсы плагина..."); } catch { }
 
-            try { _plugin.Disconnect(null); } catch { }
-
+            int generation = System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration);
             var deferral = _deferral;
             _deferral = null;
-            int generation = System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration);
+
+            try { _plugin.Disconnect(null); } catch { }
 
             System.Threading.Tasks.Task.Run(async () =>
             {
-                try { await System.Threading.Tasks.Task.Delay(800); } catch { }
+                try { await System.Threading.Tasks.Task.Delay(1250); } catch { }
 
-                // Если за время ожидания успело прийти новое подключение — не уничтожаем процесс
+                // Если за время ожидания успело прийти новое подключение — отменяем завершение
                 if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation || _plugin.IsConnected)
                 {
                     try { FileLog.Important("[BG TASK] TearDown отменен: пришло новое подключение."); } catch { }
@@ -126,13 +118,11 @@ namespace VlessVpnTask
                     return;
                 }
 
-                try { FileLog.Important("[BG TASK] TearDown: завершаю процесс фоновой задачи."); } catch { }
+                try { FileLog.Important("[BG TASK] TearDown: завершаю deferral фоновой задачи."); } catch { }
                 try { FileLog.Flush(); } catch { }
 
-                try { ExitProcessApiSet(0); } catch { }
-                try { ExitProcessKernel32(0); } catch { }
-                try { Environment.FailFast("VlessVpnTask clean exit"); } catch { }
                 try { deferral?.Complete(); } catch { }
+                _exiting = false;
             });
         }
     }
