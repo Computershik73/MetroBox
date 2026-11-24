@@ -134,6 +134,21 @@ namespace VlessVpnTask
                 try { FileLog.Flush(); } catch { }
 
                 try { deferral?.Complete(); } catch { }
+
+                // Завершаем процесс фоновой задачи (ResourceGroup="tunnel"), чтобы он не остался
+                // висеть в памяти в состоянии Suspend на W10M. Чистый CoreApplication.Exit()
+                // гарантирует, что при следующем подключении служба RasMan запустит чистый хост
+                // без 15-секундного таймаута и ошибки RAS 691.
+                try
+                {
+                    FileLog.Important($"[BG TASK] TearDown: завершаю процесс через CoreApplication.Exit (PID {GetCurrentProcessId()}).");
+                    FileLog.Flush();
+                    Windows.ApplicationModel.Core.CoreApplication.Exit();
+                }
+                catch (Exception ex)
+                {
+                    try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
+                }
                 _exiting = false;
             });
         }
