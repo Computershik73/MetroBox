@@ -26,7 +26,7 @@
         <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#0F1526" />
       </uap:VisualElements>
       <Extensions>
-        <Extension Category="windows.backgroundTasks" EntryPoint="VlessVpnTask.VpnBackgroundTask">
+        <Extension Category="windows.backgroundTasks" Executable="$targetnametoken$.exe" EntryPoint="VlessVpnTask.VpnBackgroundTask">
           <BackgroundTasks>
             <uap:Task Type="vpnClient" />
           </BackgroundTasks>
