@@ -169,6 +169,12 @@ namespace VlessApp
                             tcs.SetResult(CreateStatusJson(cmdId));
                             break;
 
+                        case "dismiss_dialog":
+                            bool isPrimary = ExtractJsonBool(json, "primary", false);
+                            bool dismissed = _mainPage.DismissActiveDialog(isPrimary);
+                            tcs.SetResult(CreateResponseJson(cmdId, "ok", dismissed ? $"Dialog dismissed (primary={isPrimary})" : "No active dialog found"));
+                            break;
+
                         case "import_url":
                             string importText = ExtractJsonString(json, "url");
                             if (string.IsNullOrEmpty(importText)) importText = ExtractJsonString(json, "text");
@@ -262,9 +268,15 @@ namespace VlessApp
             bool isConn = _mainPage.IsConnected();
             int totalProfiles = profiles != null ? profiles.Count : 0;
 
+            string dialogTitle = "";
+            if (MainPage.ActiveContentDialog != null)
+            {
+                try { dialogTitle = EscapeJson(MainPage.ActiveContentDialog.Title?.ToString() ?? "Dialog"); } catch { }
+            }
+
             string extra = string.Format(
-                "\"selected_profile\":\"{0}\",\"selected_address\":\"{1}\",\"selected_port\":{2},\"vpn_status\":\"{3}\",\"is_connected\":{4},\"total_profiles\":{5}",
-                selName, selAddr, selPort, vpnStatus, isConn ? "true" : "false", totalProfiles);
+                "\"selected_profile\":\"{0}\",\"selected_address\":\"{1}\",\"selected_port\":{2},\"vpn_status\":\"{3}\",\"is_connected\":{4},\"total_profiles\":{5},\"active_dialog\":\"{6}\"",
+                selName, selAddr, selPort, vpnStatus, isConn ? "true" : "false", totalProfiles, dialogTitle);
 
             return CreateResponseJson(cmdId, "ok", "Status report", extra);
         }
@@ -291,7 +303,34 @@ namespace VlessApp
 
             // 2. Coordinate tap with ancestor tree walk
             var pt = new Point(x, y);
-            var hitElements = VisualTreeHelper.FindElementsInHostCoordinates(pt, _mainPage).ToList();
+            List<UIElement> hitElements = null;
+
+            // Check open dialogs/popups first
+            try
+            {
+                var popups = VisualTreeHelper.GetOpenPopups(Window.Current);
+                if (popups != null)
+                {
+                    foreach (var popup in popups)
+                    {
+                        if (popup.IsOpen && popup.Child != null)
+                        {
+                            var ph = VisualTreeHelper.FindElementsInHostCoordinates(pt, popup.Child).ToList();
+                            if (ph.Count > 0)
+                            {
+                                hitElements = ph;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (hitElements == null)
+            {
+                hitElements = VisualTreeHelper.FindElementsInHostCoordinates(pt, _mainPage).ToList();
+            }
 
             if (hitElements.Count > 0)
             {
@@ -505,6 +544,17 @@ namespace VlessApp
             string pattern = $"\"{key}\"\\s*:\\s*(-?\\d+)";
             var m = System.Text.RegularExpressions.Regex.Match(json, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (m.Success && int.TryParse(m.Groups[1].Value, out int val))
+            {
+                return val;
+            }
+            return defaultValue;
+        }
+
+        private static bool ExtractJsonBool(string json, string key, bool defaultValue)
+        {
+            string pattern = $"\"{key}\"\\s*:\\s*(true|false)";
+            var m = System.Text.RegularExpressions.Regex.Match(json, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (m.Success && bool.TryParse(m.Groups[1].Value, out bool val))
             {
                 return val;
             }

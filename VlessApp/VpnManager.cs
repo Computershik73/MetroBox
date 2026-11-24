@@ -155,14 +155,12 @@ namespace VlessApp
                 AppLog.W($"[VPN MGR] AddProfileFromObjectAsync: {status}");
 
                 PatchLocalRasphonePbk();
-                EnsurePasswordVaultCredentials();
                 return status == VpnManagementErrorStatus.Ok;
             }
             catch (Exception ex)
             {
                 AppLog.W($"[VPN MGR] CreateHiddenProfileAsync: {ex.Message}");
                 PatchLocalRasphonePbk();
-                EnsurePasswordVaultCredentials();
                 return false;
             }
         }
@@ -451,36 +449,10 @@ namespace VlessApp
             return null;
         }
 
-        // Сохранение учетных данных в хранилище Windows Credential Manager (PasswordVault),
-        // чтобы системный диалер RAS и параметры ОС не требовали ввода данных и не выдавали ошибку 691
-        // при подключении как скрытого, так и вручную созданного системного профиля ("MetroBox", "Metrobox").
+        // Для VpnPlugIn (MetroBox) учетные данные в PasswordVault не требуются,
+        // параметры аутентификации плагин получает напрямую из LocalSettings.
         public static void EnsurePasswordVaultCredentials()
         {
-            string[] knownProfileNames = { ProfileName, "MetroBox", "Metrobox", "VLESS Client" };
-            try
-            {
-                var vault = new Windows.Security.Credentials.PasswordVault();
-                foreach (var name in knownProfileNames)
-                {
-                    try
-                    {
-                        vault.Retrieve(name, "vpn");
-                    }
-                    catch
-                    {
-                        try
-                        {
-                            vault.Add(new Windows.Security.Credentials.PasswordCredential(name, "vpn", "vpn"));
-                            AppLog.W($"[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для профиля '{name}'");
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AppLog.W($"[VPN MGR] Предупреждение PasswordVault: {ex.Message}");
-            }
         }
 
         public static void CleanupBrokenPrivatePhonebook()
@@ -490,8 +462,6 @@ namespace VlessApp
 
         public async Task<IVpnProfile> EnsureOwnProfileAsync()
         {
-            EnsurePasswordVaultCredentials();
-
             // Автоконфигурирование скрытого профиля временно отключено (miniport lock в RasMan).
             // Приоритет отдается стабильному системному профилю, настроенному в параметрах ОС.
             var mine = await FindOwnProfileAsync();
