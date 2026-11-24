@@ -967,16 +967,9 @@ namespace VlessApp
                     catch { }
                 }
 
-                // Безусловно освобождаем зависшие сессии RasMan перед новым подключением
                 try
                 {
-                    await ForceDisconnectActiveProfileAsync();
-                    await Task.Delay(500);
-                }
-                catch { }
-
-                try
-                {
+                    VpnManager.EnsurePasswordVaultCredentials();
                     VpnManager.PatchLocalRasphonePbk();
 
                     AppLog.W("[VPN MGR] Настройки сохранены. Запрос перехода в параметры сети для запуска туннеля.");
@@ -1039,6 +1032,17 @@ namespace VlessApp
                         string.Equals(p.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
 
                     if (!isOurProfile)
+                        continue;
+
+                    bool isConnectedStatus = false;
+                    if (p is VpnPlugInProfile plugStatus)
+                    {
+                        try { isConnectedStatus = plugStatus.ConnectionStatus == VpnManagementConnectionStatus.Connected; } catch { }
+                    }
+
+                    // Не вызываем DisconnectProfileAsync на уже отключенном профиле,
+                    // чтобы не активировать холостую фоновую задачу в svchost
+                    if (!isConnectedStatus && !_isConnected)
                         continue;
 
                     try

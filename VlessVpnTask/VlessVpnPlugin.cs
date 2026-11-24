@@ -615,7 +615,12 @@ namespace VlessVpnTask
         public void Disconnect(VpnChannel channel)
         {
             var ch = channel ?? _channel;
-            if (_disconnected) { try { ch?.Stop(); } catch { } return; }
+            if (_disconnected)
+            {
+                try { ch?.Stop(); } catch { }
+                try { Disconnected?.Invoke(); } catch { }
+                return;
+            }
             _disconnected = true;
             SetTunnelUp(false);
 

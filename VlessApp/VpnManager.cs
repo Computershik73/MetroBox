@@ -449,10 +449,36 @@ namespace VlessApp
             return null;
         }
 
-        // Для VpnPlugIn (MetroBox) учетные данные в PasswordVault не требуются,
-        // параметры аутентификации плагин получает напрямую из LocalSettings.
+        // Предварительное сохранение фиктивных учетных данных (vpn/vpn) в PasswordVault для системных профилей.
+        // В Windows 10 Mobile системная телефонная книга по умолчанию создает профили с UseRasCredentials=1.
+        // Если в PasswordVault отсутствуют данные для имени профиля, служба RasMan возвращает ошибку 691.
         public static void EnsurePasswordVaultCredentials()
         {
+            string[] knownProfileNames = { ProfileName, "MetroBox", "Metrobox", "MetroBox VPN", "VLESS Client" };
+            try
+            {
+                var vault = new Windows.Security.Credentials.PasswordVault();
+                foreach (var name in knownProfileNames)
+                {
+                    try
+                    {
+                        vault.Retrieve(name, "vpn");
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            vault.Add(new Windows.Security.Credentials.PasswordCredential(name, "vpn", "vpn"));
+                            AppLog.W($"[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для профиля '{name}'");
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.W($"[VPN MGR] Предупреждение PasswordVault: {ex.Message}");
+            }
         }
 
         public static void CleanupBrokenPrivatePhonebook()
@@ -462,6 +488,8 @@ namespace VlessApp
 
         public async Task<IVpnProfile> EnsureOwnProfileAsync()
         {
+            EnsurePasswordVaultCredentials();
+
             // Автоконфигурирование скрытого профиля временно отключено (miniport lock в RasMan).
             // Приоритет отдается стабильному системному профилю, настроенному в параметрах ОС.
             var mine = await FindOwnProfileAsync();

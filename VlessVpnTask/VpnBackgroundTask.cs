@@ -77,6 +77,19 @@ namespace VlessVpnTask
                 // а процесс держится живым за счёт удержания deferral. Сессию завершают
                 // OnPluginDisconnected (штатное/ошибочное отключение) и OnCanceled (Cancel).
                 VpnChannel.ProcessEventAsync(_plugin, taskInstance.TriggerDetails);
+
+                // Защита от зомби-хостов: если система активировала фоновую задачу,
+                // но Connect() не начался в течение 5 секунд (например, холостая активация при разрыве),
+                // гарантированно завершаем задачу и процесс, освобождая слот для следующего подключения.
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(5000);
+                    if (!_plugin.IsConnected && !_exiting)
+                    {
+                        try { FileLog.Important("[BG TASK] Нет активного подключения в течение 5 с — завершаю задачу."); } catch { }
+                        TearDownAndExit();
+                    }
+                });
             }
             catch (Exception ex)
             {
