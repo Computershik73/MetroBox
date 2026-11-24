@@ -59,6 +59,12 @@ namespace VlessVpnTask
             }
 
             Debug.WriteLine("[BG TASK] Активация фоновой задачи VPN.");
+            try
+            {
+                var cur = Process.GetCurrentProcess();
+                FileLog.Important($"[BG TASK] Активация фоновой задачи VPN в процессе '{cur.ProcessName}' (PID {cur.Id}).");
+            }
+            catch { }
 
             try
             {
@@ -118,7 +124,12 @@ namespace VlessVpnTask
                     return;
                 }
 
-                try { FileLog.Important("[BG TASK] TearDown: завершаю deferral фоновой задачи."); } catch { }
+                try
+                {
+                    var cur = Process.GetCurrentProcess();
+                    FileLog.Important($"[BG TASK] TearDown: завершаю deferral фоновой задачи в процессе '{cur.ProcessName}' (PID {cur.Id}).");
+                }
+                catch { }
                 try { FileLog.Flush(); } catch { }
 
                 try { deferral?.Complete(); } catch { }
