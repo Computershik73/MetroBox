@@ -308,6 +308,8 @@ namespace VlessApp
                 {
                     MainRootGrid.Background = new SolidColorBrush(Color.FromArgb(255, 9, 13, 28));
                 }
+                if (AboutCardBorder != null) AboutCardBorder.CornerRadius = new CornerRadius(0);
+                if (ProxyInfoBorder != null) ProxyInfoBorder.CornerRadius = new CornerRadius(0);
             }
             else
             {
@@ -426,6 +428,25 @@ namespace VlessApp
         // Состояние туннеля глазами системы.
         private static VpnManagementConnectionStatus ReadVpnState(VpnPlugInProfile plug)
         {
+            // Быстрая неблокирующая проверка NDIS сетевого стека:
+            // Если виртуальный IP туннеля (11.16.1.1) и интерфейс IANA отсутствуют,
+            // а флаг v_TunnelUp снят, туннель гарантированно отключен.
+            // Возвращаем Disconnected сразу, не зависая на COM-вызове plug.ConnectionStatus.
+            bool pluginSaysUp = false;
+            try
+            {
+                pluginSaysUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
+            }
+            catch { }
+
+            bool ifaceActive = IsVpnInterfaceActive();
+            bool ianaActive = IsVpnProfileConnectedByIana();
+
+            if (!pluginSaysUp && !ifaceActive && !ianaActive)
+            {
+                return VpnManagementConnectionStatus.Disconnected;
+            }
+
             if (plug != null)
             {
                 try
@@ -441,15 +462,7 @@ namespace VlessApp
                 catch { }
             }
 
-            // Запасная проверка: флаг плагина + реальное наличие IP туннеля в сетевом стеке
-            bool pluginSaysUp = false;
-            try
-            {
-                pluginSaysUp = (Windows.Storage.ApplicationData.Current.LocalSettings.Values["v_TunnelUp"] as bool?) ?? false;
-            }
-            catch { }
-
-            if (pluginSaysUp && IsVpnInterfaceActive())
+            if (pluginSaysUp && ifaceActive)
             {
                 return VpnManagementConnectionStatus.Connected;
             }
@@ -466,7 +479,17 @@ namespace VlessApp
 
                 // Опрашиваем состояние туннеля в фоне с таймаутом
                 var ask = Task.Run(() => ReadVpnState(plug));
-                if (await Task.WhenAny(ask, Task.Delay(3000)) != ask) return;
+                if (await Task.WhenAny(ask, Task.Delay(2500)) != ask)
+                {
+                    if (!IsVpnInterfaceActive() && !IsVpnProfileConnectedByIana())
+                    {
+                        if (_isConnected || ConnectBtnText.Text != "ПОДКЛЮЧИТЬ")
+                        {
+                            ResetToDisconnectedUI();
+                        }
+                    }
+                    return;
+                }
 
                 VpnManagementConnectionStatus status = ask.Result;
 
@@ -524,7 +547,7 @@ namespace VlessApp
                 {
                     VlessVpnTask.LiveTile.ShowDisconnected();
 
-                    if (_isConnected)
+                    if (_isConnected || ConnectBtnText.Text != "ПОДКЛЮЧИТЬ")
                     {
                         ResetToDisconnectedUI();
                     }

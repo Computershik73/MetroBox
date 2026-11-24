@@ -12,6 +12,9 @@ namespace VlessVpnTask
         [DllImport("api-ms-win-core-processthreads-l1-1-0.dll")]
         private static extern uint GetCurrentProcessId();
 
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll")]
+        private static extern void ExitProcess(uint uExitCode);
+
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -136,18 +139,18 @@ namespace VlessVpnTask
                 try { deferral?.Complete(); } catch { }
 
                 // Завершаем процесс фоновой задачи (ResourceGroup="tunnel"), чтобы он не остался
-                // висеть в памяти в состоянии Suspend на W10M. Чистый CoreApplication.Exit()
+                // висеть в памяти в состоянии Suspend на W10M. Вызов ExitProcess(0)
                 // гарантирует, что при следующем подключении служба RasMan запустит чистый хост
                 // без 15-секундного таймаута и ошибки RAS 691.
                 try
                 {
-                    FileLog.Important($"[BG TASK] TearDown: завершаю процесс через CoreApplication.Exit (PID {GetCurrentProcessId()}).");
+                    FileLog.Important($"[BG TASK] TearDown: завершаю процесс через ExitProcess (PID {GetCurrentProcessId()}).");
                     FileLog.Flush();
-                    Windows.ApplicationModel.Core.CoreApplication.Exit();
+                    ExitProcess(0);
                 }
                 catch (Exception ex)
                 {
-                    try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
+                    try { FileLog.Important($"[BG TASK] ExitProcess не удался: {ex.Message}"); } catch { }
                 }
                 _exiting = false;
             });

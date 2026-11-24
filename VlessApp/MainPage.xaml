@@ -302,7 +302,7 @@
 
                 <!-- Контентная карточка -->
                 <ScrollViewer Grid.Row="1" Margin="16,10,16,16" Background="#090D1A" IsScrollInertiaEnabled="False">
-                    <Border Background="#12182D" CornerRadius="12" BorderBrush="#1F264E" BorderThickness="1" Padding="20">
+                    <Border x:Name="AboutCardBorder" Background="#12182D" CornerRadius="12" BorderBrush="#1F264E" BorderThickness="1" Padding="20">
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->
                             <TextBlock Text="MetroBox" FontSize="28" FontWeight="Bold" Foreground="#3B82F6" HorizontalAlignment="Center"/>
@@ -317,7 +317,7 @@
                             <ToggleSwitch x:Name="ProxySharingToggle" Header="Раздача через HTTP / SOCKS5" Toggled="ProxySharingToggle_Toggled" Margin="0,0,0,6"/>
 
                             <StackPanel x:Name="ProxyInfoPanel" Visibility="Collapsed" Margin="0,0,0,20">
-                                <Border Background="#161F3B" BorderBrush="#2563EB" BorderThickness="1" CornerRadius="8" Padding="12,10">
+                                <Border x:Name="ProxyInfoBorder" Background="#161F3B" BorderBrush="#2563EB" BorderThickness="1" CornerRadius="8" Padding="12,10">
                                     <StackPanel>
                                         <TextBlock Text="● Сервер раздачи активен" FontSize="12" FontWeight="SemiBold" Foreground="#10B981" Margin="0,0,0,4"/>
                                         <TextBlock x:Name="ProxyHostPortText" Text="Порт: 10808 (HTTP / SOCKS5)" FontSize="12" Foreground="White" Margin="0,0,0,4"/>
