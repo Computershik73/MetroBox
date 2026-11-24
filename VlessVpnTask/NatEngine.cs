@@ -557,6 +557,12 @@ public void SignalStop()
                 }
                 else if (!isIpv6 && FakeDns.TryResolve(dstIpBytes, out byte[] realIp, out string fakeDomain))
                 {
+                    if (IsVpnServerDomain(fakeDomain))
+                    {
+                        FileLog.Important($"[NAT DROP] Перехвачен паразитный SYN на фейковый IP для сервера '{fakeDomain}' — сбрасываю (RST)");
+                        SendRstFor(buf, ipHeaderLen, seq, payloadLen, flags, isIpv6);
+                        return;
+                    }
                     c.DnsQueryDomain = fakeDomain;  // используется в SendMuxDataAsync для addrType=0x02
                     FileLog.W($"[FAKE DNS HIT] SYN to fake {dstIpBytes[0]}.{dstIpBytes[1]}.{dstIpBytes[2]}.{dstIpBytes[3]}:{dstPort} -> {fakeDomain} (real {realIp[0]}.{realIp[1]}.{realIp[2]}.{realIp[3]})");
                 }
@@ -759,25 +765,26 @@ public void SignalStop()
             if (!isSs && Config != null &&
                 !string.IsNullOrEmpty(Config.ChainExitHost) && Config.ChainExitPort > 0)
             {
+                chainOuter = new VlessConnection(Config, Channel);
                 byte[] exitIp;
                 if (VlessConnection.TryParseIpv4Public(Config.ChainExitHost, out exitIp))
                 {
-                    chainOuter = new VlessConnection(Config, Channel);
                     chainOuter.ConfigureDirectIp(exitIp, false, (ushort)Config.ChainExitPort);
-                    if (!await chainOuter.StartAsync())
-                    {
-                        FileLog.Important("[CHAIN] Первое звено (реле) не поднялось.");
-                        try { chainOuter.Close(); } catch { }
-                        ReleaseDirectSlot(c);
-                        CloseConnLocal(c);
-                        return;
-                    }
-                    FileLog.Important($"[CHAIN] Первое звено поднято: реле → {Config.ChainExitHost}:{Config.ChainExitPort}.");
                 }
                 else
                 {
-                    FileLog.Important($"[CHAIN] Выходной узел '{Config.ChainExitHost}' не IPv4 — цепочку не строю.");
+                    chainOuter.ConfigureDirectDomain(Config.ChainExitHost, (ushort)Config.ChainExitPort);
                 }
+
+                if (!await chainOuter.StartAsync())
+                {
+                    FileLog.Important("[CHAIN] Первое звено (входной прокси) не поднялось.");
+                    try { chainOuter.Close(); } catch { }
+                    ReleaseDirectSlot(c);
+                    CloseConnLocal(c);
+                    return;
+                }
+                FileLog.Important($"[CHAIN] Первое звено поднято: входной прокси → {Config.ChainExitHost}:{Config.ChainExitPort}.");
             }
 
             // Второе звено проверяется выходным узлом по ЕГО ключам REALITY —
@@ -1641,15 +1648,43 @@ public void SignalStop()
                 string domain = ParseDnsQuestion(dnsPayload);
                 if (!string.IsNullOrEmpty(domain) && domain != "Unknown" && domain != "Malformed" && domain != "ErrorParsing")
                 {
-                    byte[] fakeIp = FakeDns.RegisterStable(domain, FakeDnsPlaceholderRealIp);
-                    if (fakeIp != null)
+                    // КРИТИЧЕСКАЯ ЗАЩИТА: Никогда не возвращать FakeDns (11.17.x.x) для самого VPN-сервера,
+                    // SNI или выходных узлов цепочки! Иначе исходящий сокет плагина подключится сам к себе
+                    // в туннель (петля loopback black hole).
+                    if (IsVpnServerDomain(domain))
                     {
-                        byte[] aReply = BuildFakeAReply(dnsPayload, fakeIp);
-                        if (aReply != null)
+                        FileLog.Important($"[DNS SERVER BYPASS] A-запрос для домена сервера '{domain}' — FakeDns запрещён.");
+                        byte[] srvIpBytes = GetKnownServerIpBytes();
+                        if (srvIpBytes != null)
                         {
-                            FileLog.Important($"[FAKE DNS LOCAL] {domain} -> {fakeIp[0]}.{fakeIp[1]}.{fakeIp[2]}.{fakeIp[3]}");
-                            InjectDnsReply(aReply, srcIpBytes, dstIpBytes, srcPort, dstPort);
+                            byte[] realReply = BuildFakeAReply(dnsPayload, srvIpBytes);
+                            if (realReply != null)
+                            {
+                                FileLog.Important($"[DNS SERVER BYPASS] Возвращаю реальный IP сервера {srvIpBytes[0]}.{srvIpBytes[1]}.{srvIpBytes[2]}.{srvIpBytes[3]} для {domain}");
+                                InjectDnsReply(realReply, srcIpBytes, dstIpBytes, srcPort, dstPort);
+                                return true;
+                            }
+                        }
+                        // Если реальный IP ещё не разрешён — отдаём NODATA (пустой ответ), чтобы ОС не зависала в цикле
+                        byte[] emptyReply = BuildEmptyDnsReply(dnsPayload);
+                        if (emptyReply != null)
+                        {
+                            InjectDnsReply(emptyReply, srcIpBytes, dstIpBytes, srcPort, dstPort);
                             return true;
+                        }
+                    }
+                    else
+                    {
+                        byte[] fakeIp = FakeDns.RegisterStable(domain, FakeDnsPlaceholderRealIp);
+                        if (fakeIp != null)
+                        {
+                            byte[] aReply = BuildFakeAReply(dnsPayload, fakeIp);
+                            if (aReply != null)
+                            {
+                                FileLog.Important($"[FAKE DNS LOCAL] {domain} -> {fakeIp[0]}.{fakeIp[1]}.{fakeIp[2]}.{fakeIp[3]}");
+                                InjectDnsReply(aReply, srcIpBytes, dstIpBytes, srcPort, dstPort);
+                                return true;
+                            }
                         }
                     }
                 }
@@ -1722,6 +1757,43 @@ public void SignalStop()
             }
             catch { }
             return false;
+        }
+
+        private bool IsVpnServerDomain(string domain)
+        {
+            if (string.IsNullOrEmpty(domain) || Config == null) return false;
+
+            if (string.Equals(domain, Config.Address, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.IsNullOrEmpty(Config.Host) && string.Equals(domain, Config.Host, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.IsNullOrEmpty(Config.Sni) && string.Equals(domain, Config.Sni, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.IsNullOrEmpty(Config.ChainExitHost) && string.Equals(domain, Config.ChainExitHost, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.IsNullOrEmpty(Config.ChainExitSni) && string.Equals(domain, Config.ChainExitSni, StringComparison.OrdinalIgnoreCase)) return true;
+
+            return false;
+        }
+
+        private static byte[] GetKnownServerIpBytes()
+        {
+            string ipStr = VlessVpnPlugin.ServerIp;
+            if (string.IsNullOrEmpty(ipStr) || ipStr.StartsWith("11.16.") || ipStr.StartsWith("11.17."))
+            {
+                try
+                {
+                    var s = Windows.Storage.ApplicationData.Current.LocalSettings.Values;
+                    ipStr = (s["v_ServerIp"] as string) ?? (s["v_LastServerIp"] as string);
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(ipStr) && !ipStr.StartsWith("11.16.") && !ipStr.StartsWith("11.17."))
+            {
+                if (System.Net.IPAddress.TryParse(ipStr, out var parsed) &&
+                    parsed.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    return parsed.GetAddressBytes();
+                }
+            }
+            return null;
         }
 
         private static byte[] BuildEmptyDnsReply(byte[] query)
@@ -1921,10 +1993,11 @@ public void SignalStop()
             }
         }
 
-        private static byte[] RewriteAAnswersToFake(byte[] response, string domain)
+        private byte[] RewriteAAnswersToFake(byte[] response, string domain)
         {
             if (response == null || response.Length < 12) return response;
             if (string.IsNullOrEmpty(domain)) return response;
+            if (IsVpnServerDomain(domain)) return response; // Не подменяем реальный ответ DNS для самого сервера VPN!
             try
             {
                 int qd = (response[4] << 8) | response[5];

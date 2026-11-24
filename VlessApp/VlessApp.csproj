@@ -145,9 +145,13 @@
     <Compile Include="AppLog.cs" />
     <Compile Include="AmneziaLink.cs" />
     <Compile Include="CountryFlags.cs" />
+    <Compile Include="DeviceHardwareId.cs" />
     <Compile Include="HappCrypto.cs" />
+    <Compile Include="IncyCrypto.cs" />
     <Compile Include="VlessProfile.cs" />
     <Compile Include="VpnManager.cs" />
+    <Compile Include="ProxySharingServer.cs" />
+    <Compile Include="AgentControlBridge.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

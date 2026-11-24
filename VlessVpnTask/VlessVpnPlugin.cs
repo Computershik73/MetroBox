@@ -26,6 +26,8 @@ namespace VlessVpnTask
         public string Host { get; set; }
         public string Flow { get; set; }
         public string Alpn { get; set; }
+        public string Fingerprint { get; set; } = "firefox";
+        public int Mtu { get; set; } = 1400;
 
         // Второе звено цепочки Amnezia. Address/Port выше — это реле, которое
         // умеет доводить только до этого узла. Пока используется для разовой
@@ -61,6 +63,8 @@ namespace VlessVpnTask
                 Type = Type,
                 Security = Security,
                 Alpn = Alpn,
+                Fingerprint = Fingerprint,
+                Mtu = Mtu,
                 Path = Path,
                 Host = Host,
                 XhttpMode = XhttpMode
@@ -273,6 +277,8 @@ namespace VlessVpnTask
                     Host = localSettings.Values["v_Host"] as string,
                     Flow = localSettings.Values["v_Flow"] as string,
                     Alpn = localSettings.Values["v_Alpn"] as string,
+                    Fingerprint = (localSettings.Values["v_Fingerprint"] as string) ?? "firefox",
+                    Mtu = (localSettings.Values["v_Mtu"] as int?) ?? 1400,
                     XhttpMode = (localSettings.Values["v_XhttpMode"] as string) ?? "stream-one",
                     Method = (localSettings.Values["v_SsMethod"] as string) ?? "",
                     Password = (localSettings.Values["v_SsPassword"] as string) ?? "",
@@ -327,24 +333,59 @@ namespace VlessVpnTask
                 }
                 catch { }
 
+                var excludedIps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // 1. Проверяем предварительно сохранённые адреса из интерфейса
+                string preResolvedIp = null;
+                string preResolvedIps = null;
+                try
+                {
+                    preResolvedIp = localSettings.Values["v_ServerIp"] as string;
+                    preResolvedIps = localSettings.Values["v_ServerIps"] as string;
+                }
+                catch { }
+
+                if (!string.IsNullOrEmpty(preResolvedIps))
+                {
+                    foreach (var ip in preResolvedIps.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string s = ip.Trim();
+                        if (!string.IsNullOrEmpty(s) && !IsTunnelFakeIp(s)) excludedIps.Add(s);
+                    }
+                }
+                if (!string.IsNullOrEmpty(preResolvedIp) && !IsTunnelFakeIp(preResolvedIp))
+                {
+                    excludedIps.Add(preResolvedIp.Trim());
+                }
+
                 if (restartOverLiveTun && !string.IsNullOrEmpty(knownIp) && !IsTunnelFakeIp(knownIp) &&
                     string.Equals(knownFor, _config.Address, StringComparison.OrdinalIgnoreCase))
                 {
                     ServerIp = knownIp;
+                    excludedIps.Add(knownIp);
                     FileLog.Important($"[VPN PLUGIN] Переподключение поверх живого TUN — беру известный IP сервера: {ServerIp} (DNS сейчас всё равно уходит в туннель).");
                 }
                 else
                 {
-                    ServerIp = ResolveServerIpAsync(_config.Address, 3, 2000).GetAwaiter().GetResult();
-                    if (!string.IsNullOrEmpty(ServerIp))
+                    var resolvedList = ResolveServerIpsAsync(_config.Address, 3, 2000).GetAwaiter().GetResult();
+                    if (resolvedList != null && resolvedList.Count > 0)
                     {
-                        FileLog.Important($"[VPN PLUGIN] Успешно разрешен IP: {ServerIp}");
+                        ServerIp = resolvedList[0];
+                        foreach (var ip in resolvedList) excludedIps.Add(ip);
+                        FileLog.Important($"[VPN PLUGIN] Успешно разрешены IP сервера ({_config.Address}): {string.Join(", ", resolvedList)}");
                         try
                         {
                             localSettings.Values[LastServerIpKey] = ServerIp;
                             localSettings.Values[LastServerHostKey] = _config.Address;
+                            localSettings.Values["v_ServerIp"] = ServerIp;
+                            localSettings.Values["v_ServerIps"] = string.Join(";", excludedIps);
                         }
                         catch { }
+                    }
+                    else if (excludedIps.Count > 0)
+                    {
+                        foreach (var ip in excludedIps) { ServerIp = ip; break; }
+                        FileLog.Important($"[VPN PLUGIN] DNS не ответил — использую предварительно сохранённый IP: {ServerIp} (всего в исключениях: {excludedIps.Count})");
                     }
                     else
                     {
@@ -356,12 +397,31 @@ namespace VlessVpnTask
                         if (!string.IsNullOrEmpty(cachedIp) && !IsTunnelFakeIp(cachedIp))
                         {
                             ServerIp = cachedIp;
+                            excludedIps.Add(cachedIp);
                             FileLog.Important($"[VPN PLUGIN] DNS не ответил — беру последний известный IP сервера: {ServerIp}");
+                        }
+                        else if (System.Net.IPAddress.TryParse(_config.Address, out var rawIp) &&
+                                 rawIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        {
+                            ServerIp = rawIp.ToString();
+                            excludedIps.Add(ServerIp);
+                            FileLog.Important($"[VPN PLUGIN] Адрес сервера уже является IPv4: {ServerIp}");
                         }
                         else
                         {
                             FileLog.Important("[VPN PLUGIN] ВНИМАНИЕ: IP сервера не разрешён и кэша нет — подключение может не подняться.");
                         }
+                    }
+                }
+
+                // Исключаем также выходной узел Multi-Hop цепочки, если задан
+                if (!string.IsNullOrEmpty(_config.ChainExitHost))
+                {
+                    var exitIps = ResolveServerIpsAsync(_config.ChainExitHost, 2, 1500).GetAwaiter().GetResult();
+                    if (exitIps != null && exitIps.Count > 0)
+                    {
+                        foreach (var ip in exitIps) excludedIps.Add(ip);
+                        FileLog.Important($"[VPN PLUGIN] Выходной узел цепочки ({_config.ChainExitHost}) добавлен в исключения: {string.Join(", ", exitIps)}");
                     }
                 }
 
@@ -387,8 +447,18 @@ namespace VlessVpnTask
                 routes.Ipv6InclusionRoutes.Add(new VpnRoute(new HostName("c000::"), 3));
                 routes.Ipv6InclusionRoutes.Add(new VpnRoute(new HostName("e000::"), 3));
 
-                if (!string.IsNullOrEmpty(ServerIp))
-                    routes.Ipv4ExclusionRoutes.Add(new VpnRoute(new HostName(ServerIp), 32));
+                foreach (var ip in excludedIps)
+                {
+                    try
+                    {
+                        routes.Ipv4ExclusionRoutes.Add(new VpnRoute(new HostName(ip), 32));
+                        FileLog.W($"[VPN PLUGIN] Исключён маршрут к серверу: {ip}/32");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog.W($"[VPN PLUGIN] Ошибка добавления исключения маршрута для {ip}: {ex.Message}");
+                    }
+                }
 
                 var dnsAssignment = new VpnDomainNameAssignment();
                 var dnsInfo = new VpnDomainNameInfo(
@@ -518,11 +588,12 @@ namespace VlessVpnTask
                     FileLog.Important("[VPN PLUGIN] DIRECT-режим (xhttp без mux): соединения открываются по требованию, пред-канал не нужен.");
                 }
 
+                uint mtu = _config.Mtu > 0 ? (uint)_config.Mtu : 1400;
                 _channel.StartWithMainTransport(
                     ipv4List, ipv6List, null, routes, dnsAssignment,
-                    1400, 1400, true, _dummyTransport);
+                    mtu, mtu, true, _dummyTransport);
 
-                FileLog.W("[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ!");
+                FileLog.W($"[VPN PLUGIN] TUN СЕТЬ ЗАПУЩЕНА СИСТЕМОЙ! MTU={mtu}, FP='{_config.Fingerprint}'");
                 IsConnected = true;
                 SetTunnelUp(true);
                 StartWatchdog();
@@ -543,7 +614,13 @@ namespace VlessVpnTask
 
         public void Disconnect(VpnChannel channel)
         {
-            if (_disconnected) { try { channel?.Stop(); } catch { } return; }
+            var ch = channel ?? _channel;
+            if (_disconnected)
+            {
+                try { ch?.Stop(); } catch { }
+                try { Disconnected?.Invoke(); } catch { }
+                return;
+            }
             _disconnected = true;
             SetTunnelUp(false);
 
@@ -565,13 +642,18 @@ namespace VlessVpnTask
             try { _awgEngine?.SignalStop(); } catch { }
             _awgEngine = null;
             try { _natEngine?.SignalStop(); } catch { }
+            _natEngine = null;
 
+            // Канал RasMan останавливаем первым, пока ассоциированный с ним транспорт _dummyTransport еще жив!
+            try { ch?.Stop(); } catch { }
+            _channel = null;
+
+            try { _triggerWriter?.DetachStream(); _triggerWriter?.Dispose(); } catch { }
+            _triggerWriter = null;
             try { _dummyTransport?.Dispose(); } catch { }
             _dummyTransport = null;
             try { _dummyTrigger?.Dispose(); } catch { }
             _dummyTrigger = null;
-
-            try { channel?.Stop(); } catch { }
 
             IsConnected = false;
             try { Disconnected?.Invoke(); } catch { }
@@ -842,9 +924,19 @@ namespace VlessVpnTask
             return !string.IsNullOrEmpty(ip) && (ip.StartsWith("11.16.") || ip.StartsWith("11.17."));
         }
 
-        private static async Task<string> ResolveServerIpAsync(string host, int attempts, int perTryMs)
+        private static async Task<List<string>> ResolveServerIpsAsync(string host, int attempts, int perTryMs)
         {
-            if (string.IsNullOrEmpty(host)) return null;
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(host)) return result;
+
+            if (System.Net.IPAddress.TryParse(host, out var parsedIp))
+            {
+                if (parsedIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    result.Add(parsedIp.ToString());
+                    return result;
+                }
+            }
 
             for (int i = 1; i <= attempts; i++)
             {
@@ -862,8 +954,9 @@ namespace VlessVpnTask
                                 FileLog.Important($"[VPN PLUGIN] DNS вернул адрес туннеля ({s}) — игнорирую, это ответ нашего же FakeDns.");
                                 continue;
                             }
-                            return s;
+                            if (!result.Contains(s)) result.Add(s);
                         }
+                        if (result.Count > 0) return result;
                     }
                     else
                     {
@@ -877,7 +970,13 @@ namespace VlessVpnTask
 
                 if (i < attempts) await Task.Delay(500);
             }
-            return null;
+            return result;
+        }
+
+        private static async Task<string> ResolveServerIpAsync(string host, int attempts, int perTryMs)
+        {
+            var ips = await ResolveServerIpsAsync(host, attempts, perTryMs);
+            return (ips != null && ips.Count > 0) ? ips[0] : null;
         }
 
         // NetworkStatusChanged прилетает пачками и из произвольного потока: при переключении
@@ -1031,6 +1130,7 @@ namespace VlessVpnTask
         private async Task WatchdogTickAsync()
         {
             if (_disconnected || !IsConnected) return;
+            SetTunnelUp(true);
             if (System.Threading.Interlocked.Exchange(ref _watchdogBusy, 1) == 1) return;
 
             try

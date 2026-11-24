@@ -66,6 +66,22 @@ namespace VlessVpnTask
             }
         }
 
+        public static void Flush()
+        {
+            try
+            {
+                var q = _queue;
+                if (q == null) return;
+                var sb = new StringBuilder(4096);
+                while (q.TryTake(out string line))
+                {
+                    sb.Append(line).Append("\r\n");
+                }
+                if (sb.Length > 0) FlushToDisk(sb.ToString());
+            }
+            catch { }
+        }
+
         // НЕ блокирует: только кладёт строку в очередь и возвращается.
         public static void W(string msg)
         {

@@ -9,7 +9,11 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
-        
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll")]
+        private static extern uint GetCurrentProcessId();
+
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll")]
+        private static extern void ExitProcess(uint uExitCode);
 
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
@@ -19,6 +23,7 @@ namespace VlessVpnTask
 
         public void Run(IBackgroundTaskInstance taskInstance)
         {
+            _exiting = false;
             FileLog.Init();
 
             // Deferral берём на КАЖДУЮ активацию. Завершаем его либо при чистом выходе
@@ -60,6 +65,11 @@ namespace VlessVpnTask
             }
 
             Debug.WriteLine("[BG TASK] Активация фоновой задачи VPN.");
+            try
+            {
+                FileLog.Important($"[BG TASK] Активация фоновой задачи VPN (PID {GetCurrentProcessId()}).");
+            }
+            catch { }
 
             try
             {
@@ -67,6 +77,19 @@ namespace VlessVpnTask
                 // а процесс держится живым за счёт удержания deferral. Сессию завершают
                 // OnPluginDisconnected (штатное/ошибочное отключение) и OnCanceled (Cancel).
                 VpnChannel.ProcessEventAsync(_plugin, taskInstance.TriggerDetails);
+
+                // Защита от зомби-хостов: если система активировала фоновую задачу,
+                // но Connect() не начался в течение 5 секунд (например, холостая активация при разрыве),
+                // гарантированно завершаем задачу и процесс, освобождая слот для следующего подключения.
+                System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(5000);
+                    if (!_plugin.IsConnected && !_exiting)
+                    {
+                        try { FileLog.Important("[BG TASK] Нет активного подключения в течение 5 с — завершаю задачу."); } catch { }
+                        TearDownAndExit();
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -88,60 +111,61 @@ namespace VlessVpnTask
             TearDownAndExit();
         }
 
-        // Единственная точка выхода. Гарантирует, что процесс умрёт чисто и
-        // освободит ResourceGroup 'tunnel' + loopback-транспорт, чтобы СЛЕДУЮЩЕЕ
-        // подключение поднялось без ошибки 691.
+        // Единственная точка выхода.
+        // 1) Синхронно гасит плагин (_channel.Stop() и сокеты).
+        // 2) Завершение deferral выполняет асинхронно с задержкой 1250 мс вне RPC-потока RasMan,
+        //    чтобы вызов Disconnect(channel) успел штатно вернуть S_OK в систему и служба
+        //    RasMan чисто закрыла порт до сброса отсрочки UWP.
+        // 3) Сброс _exiting = false позволяет повторному подключению подняться в том же процессе.
         private static void TearDownAndExit()
         {
             if (_exiting) return;
             _exiting = true;
 
-            try { FileLog.Important("[BG TASK] TearDown: гашу плагин."); } catch { }
+            try { FileLog.Important("[BG TASK] TearDown: синхронно освобождаю ресурсы плагина..."); } catch { }
 
-            // Запоминаем, какое подключение гасим и чья это отсрочка: если за время
-            // ожидания придёт новое подключение, выходить будет нельзя.
             int generation = System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration);
             var deferral = _deferral;
+            _deferral = null;
 
-            // 1) синхронно освобождаем ресурсы плагина (сокеты, движок, loopback)
             try { _plugin.Disconnect(null); } catch { }
 
-            // 2) выход уводим в сторону от потока, на котором система вызвала Disconnect:
-            //    пока мы на нём спим, платформа ждёт возврата из собственного вызова.
-            //
-            //    И deferral завершаем ПОСЛЕДНИМ. Complete() — это разрешение системе убить
-            //    процесс, а до него нужно успеть закрыть сокеты и дописать журнал. Прежний
-            //    порядок (сначала Complete, потом ожидание) процесс переживал не всегда: в
-            //    журнале телефона видно, как запись обрывается на середине Disconnect, и
-            //    следующее подключение падало с ошибкой 691 — ресурсы туннеля остались за
-            //    убитым процессом.
             System.Threading.Tasks.Task.Run(async () =>
             {
                 try { await System.Threading.Tasks.Task.Delay(1250); } catch { }
 
-                // Пока процесс дозакрывался, система пришла с новым подключением — в тот
-                // же процесс. Выход сейчас убил бы свежий туннель на середине подъёма.
-                // Туннель закрыли приложением и сразу открыли снова — ровно так и бывает.
-                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation)
+                // Если за время ожидания успело прийти новое подключение — отменяем завершение
+                if (System.Threading.Volatile.Read(ref VlessVpnPlugin.ConnectGeneration) != generation || _plugin.IsConnected)
                 {
-                    try { FileLog.Important("[BG TASK] TearDown отменён: пока процесс закрывался, пришло новое подключение."); } catch { }
-
-                    // Свою отсрочку закрываем, только если она уже не нужна новому сеансу.
-                    if (!ReferenceEquals(deferral, _deferral)) { try { deferral?.Complete(); } catch { } }
+                    try { FileLog.Important("[BG TASK] TearDown отменен: пришло новое подключение."); } catch { }
                     _exiting = false;
                     return;
                 }
 
-                try { FileLog.Important("[BG TASK] TearDown: отпускаю задачу и выхожу."); } catch { }
+                try
+                {
+                    FileLog.Important($"[BG TASK] TearDown: завершаю deferral фоновой задачи (PID {GetCurrentProcessId()}).");
+                }
+                catch { }
+                try { FileLog.Flush(); } catch { }
 
                 try { deferral?.Complete(); } catch { }
-                if (ReferenceEquals(deferral, _deferral)) _deferral = null;
 
-                try { Windows.ApplicationModel.Core.CoreApplication.Exit(); }
+                // Завершаем процесс фоновой задачи (ResourceGroup="tunnel"), чтобы он не остался
+                // висеть в памяти в состоянии Suspend на W10M. Вызов ExitProcess(0)
+                // гарантирует, что при следующем подключении служба RasMan запустит чистый хост
+                // без 15-секундного таймаута и ошибки RAS 691.
+                try
+                {
+                    FileLog.Important($"[BG TASK] TearDown: завершаю процесс через ExitProcess (PID {GetCurrentProcessId()}).");
+                    FileLog.Flush();
+                    ExitProcess(0);
+                }
                 catch (Exception ex)
                 {
-                    try { FileLog.Important($"[BG TASK] CoreApplication.Exit не удался: {ex.Message}"); } catch { }
+                    try { FileLog.Important($"[BG TASK] ExitProcess не удался: {ex.Message}"); } catch { }
                 }
+                _exiting = false;
             });
         }
     }
