@@ -415,6 +415,28 @@ namespace VlessApp
                         string.Equals(pr.ProfileName, "Metrobox", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(pr.ProfileName, "VLESS Client", StringComparison.OrdinalIgnoreCase);
 
+                    if (nameMatch && pr is VpnPlugInProfile plugMatch)
+                    {
+                        if (string.IsNullOrEmpty(plugMatch.VpnPluginPackageFamilyName) ||
+                            !string.Equals(plugMatch.VpnPluginPackageFamilyName, Package.Current.Id.FamilyName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                plugMatch.VpnPluginPackageFamilyName = Package.Current.Id.FamilyName;
+                                if (plugMatch.ServerUris.Count == 0)
+                                {
+                                    plugMatch.ServerUris.Add(new Uri("https://127.0.0.1"));
+                                }
+                                var updStatus = await agent.UpdateProfileFromObjectAsync(plugMatch);
+                                AppLog.W($"[VPN MGR] Обновлен PFN для '{pr.ProfileName}' => {Package.Current.Id.FamilyName}: {updStatus}");
+                            }
+                            catch (Exception uex)
+                            {
+                                AppLog.W($"[VPN MGR] Ошибка UpdateProfileFromObjectAsync: {uex.Message}");
+                            }
+                        }
+                    }
+
                     if (nameMatch)
                     {
                         if (status == VpnManagementConnectionStatus.Connected)
