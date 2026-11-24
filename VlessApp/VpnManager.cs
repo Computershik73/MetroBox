@@ -455,23 +455,27 @@ namespace VlessApp
         public static void EnsurePasswordVaultCredentials()
         {
             string[] knownProfileNames = { ProfileName, "MetroBox", "Metrobox", "MetroBox VPN", "VLESS Client" };
+            string[] knownUsers = { "vpn", "MetroBox" };
             try
             {
                 var vault = new Windows.Security.Credentials.PasswordVault();
                 foreach (var name in knownProfileNames)
                 {
-                    try
-                    {
-                        vault.Retrieve(name, "vpn");
-                    }
-                    catch
+                    foreach (var user in knownUsers)
                     {
                         try
                         {
-                            vault.Add(new Windows.Security.Credentials.PasswordCredential(name, "vpn", "vpn"));
-                            AppLog.W($"[VPN MGR] Учётные данные (vpn/vpn) сохранены в PasswordVault для профиля '{name}'");
+                            vault.Retrieve(name, user);
                         }
-                        catch { }
+                        catch
+                        {
+                            try
+                            {
+                                vault.Add(new Windows.Security.Credentials.PasswordCredential(name, user, "vpn"));
+                                AppLog.W($"[VPN MGR] Учётные данные ({user}/vpn) сохранены в PasswordVault для профиля '{name}'");
+                            }
+                            catch { }
+                        }
                     }
                 }
             }
