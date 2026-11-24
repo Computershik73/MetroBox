@@ -9,6 +9,12 @@ namespace VlessVpnTask
 {
     public sealed class VpnBackgroundTask : IBackgroundTask
     {
+        [DllImport("api-ms-win-core-processthreads-l1-1-0.dll", EntryPoint = "ExitProcess")]
+        private static extern void ExitProcessApiSet(uint uExitCode);
+
+        [DllImport("kernel32.dll", EntryPoint = "ExitProcess")]
+        private static extern void ExitProcessKernel32(uint uExitCode);
+
         private static readonly VlessVpnPlugin _plugin = new VlessVpnPlugin();
         private static readonly object _gate = new object();
         private static bool _wired;
@@ -87,9 +93,13 @@ namespace VlessVpnTask
             TearDownAndExit();
         }
 
-        // Единственная точка выхода. Освобождает ресурсы плагина и завершает
-        // фоновую задачу через штатный deferral.Complete() платформы UWP,
-        // позволяя службе RasMan и сетевому стеку чисто освободить виртуальный адаптер.
+        // Единственная точка выхода.
+        // 1) Синхронно гасит плагин (_channel.Stop() и сокеты).
+        // 2) Завершение deferral и ExitProcess выполняет асинхронно с задержкой, чтобы
+        //    вызов Disconnect(channel) успел штатно вернуться в систему, и служба RasMan
+        //    чисто закрыла порт до уничтожения процесса.
+        // 3) ExitProcess гарантирует, что процесс ResourceGroup="tunnel" не останется
+        //    висеть в памяти и следующее подключение сможет запуститься без ошибки 691.
         private static void TearDownAndExit()
         {
             if (_exiting) return;
@@ -99,10 +109,21 @@ namespace VlessVpnTask
 
             try { _plugin.Disconnect(null); } catch { }
 
-            try { FileLog.Important("[BG TASK] TearDown: завершаю deferral."); } catch { }
-
-            try { _deferral?.Complete(); } catch { }
+            var deferral = _deferral;
             _deferral = null;
+
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                try { await System.Threading.Tasks.Task.Delay(800); } catch { }
+
+                try { FileLog.Important("[BG TASK] TearDown: завершаю deferral и выхожу."); } catch { }
+                try { deferral?.Complete(); } catch { }
+                try { FileLog.Flush(); } catch { }
+
+                try { ExitProcessApiSet(0); } catch { }
+                try { ExitProcessKernel32(0); } catch { }
+                try { Environment.FailFast("VlessVpnTask clean exit"); } catch { }
+            });
         }
     }
 }
