@@ -301,7 +301,7 @@
                 </Grid>
 
                 <!-- Контентная карточка -->
-                <ScrollViewer Grid.Row="1" Margin="16,10,16,16" Background="#090D1A">
+                <ScrollViewer Grid.Row="1" Margin="16,10,16,16" Background="#090D1A" IsScrollInertiaEnabled="False">
                     <Border Background="#12182D" CornerRadius="12" BorderBrush="#1F264E" BorderThickness="1" Padding="20">
                         <StackPanel>
                             <!-- Название приложения (MetroBox) -->

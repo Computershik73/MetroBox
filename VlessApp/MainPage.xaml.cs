@@ -1031,7 +1031,12 @@ namespace VlessApp
                         try { isConnectedStatus = plugStatus.ConnectionStatus == VpnManagementConnectionStatus.Connected; } catch { }
                     }
 
-                    if (!isOurProfile && !isConnectedStatus)
+                    if (!isOurProfile)
+                        continue;
+
+                    // Если профиль уже отключен в системе, повторный вызов DisconnectProfileAsync
+                    // в RasMan не требуется и может перевести драйвер минипорта в состояние сбоя.
+                    if (!isConnectedStatus && !_isConnected)
                         continue;
 
                     try
